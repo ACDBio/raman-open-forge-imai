@@ -13,8 +13,8 @@ We  provide .ipynb showing how to make custom reference databases based on raman
 
 Key capabilities include:
 
-Device control (integration time, averaging, gain, offset, laser voltage, smoothing).
-Spectrum acquisition (single or continuous mode) with background subtraction.
+ - Device control (integration time, averaging, gain, offset, laser voltage, smoothing). 
+ - Spectrum acquisition (single or continuous mode) with background subtraction. 
 Conversion to Raman shifts with optional quadratic calibration to correct peak positions.
 Advanced preprocessing: cropping, denoising (SavGol), baseline correction (ASLS), normalization.
 Peak detection and export.

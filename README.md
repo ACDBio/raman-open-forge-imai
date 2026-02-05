@@ -105,19 +105,30 @@ python3 Main.py
 
 # Usage
 Here we illustrate the usage of the software in the process of soft Raman shift calibration.
- 1. Obtaining acetone spectrum (the probe YM_RPL_785_500 and 3d printed quartz cuvette holder was used), comparison with the reference database spectrum,
-peak search and software calibration based on the obtained data using a polynomial fit (the reference DB acetone spectrum peaks were determined prior to the procedure with the same software)
-![calib_1_acetone-2026-02-04_00 54 32](https://github.com/user-attachments/assets/022aa510-66cc-4318-bc74-ed62187ff0d6) 
 
- 2. Searching spectra similar to the measures DMSO spectrum using IUR procedure and plotting the found spectrum along with the measured one (this was performed as a sanity check after calibration).
-Note: IUR is sensitive to tolerance and for usage the settings of IUR should be adjusted to your database and hardware.
-![calib_3_dmso_sanchck-2026-02-04_01 35 21](https://github.com/user-attachments/assets/5b4093c9-1c5b-476a-abc4-2332446cc0cb) 
+### 1. Obtaining acetone spectrum and calibration
+Obtaining acetone spectrum (the probe YM_RPL_785_500 and 3d printed quartz cuvette holder was used), comparison with the reference database spectrum,  
+peak search and software calibration based on the obtained data using a polynomial fit  
+(the reference DB acetone spectrum peaks were determined prior to the procedure with the same software)
+![Acetone calibration](https://github.com/ACDBio/raman-open-forge-imai/blob/main/calib_1_acetone.gif)
 
- 3. Testing calibration using isopropyl alcohol
-![calib_3_ipa_sanchck-2026-02-04_01 44 24](https://github.com/user-attachments/assets/81b003ce-e797-4a69-abf9-4d44ec80f874) 
+---
 
- 4. Collecting data: saving spectra information and images.
-![screenshots-2026-02-04_02 08 32](https://github.com/user-attachments/assets/7e5e2167-0f5f-4239-84da-dcc6aa361790) 
+### 2. DMSO sanity check with IUR
+Searching spectra similar to the measured DMSO spectrum using IUR procedure and plotting the found spectrum along with the measured one.
+**Note:** IUR is sensitive to tolerance — adjust settings for your database and hardware.
+![DMSO sanity check](https://github.com/ACDBio/raman-open-forge-imai/blob/main/calib_2_dmso_sanchck.gif)
+
+---
+
+### 3. Isopropyl alcohol calibration test
+![IPA test](https://github.com/ACDBio/raman-open-forge-imai/blob/main/calib_3_ipa_test.gif)
+
+---
+
+### 4. Data collection and saving spectra
+
+![Data collection](https://github.com/ACDBio/raman-open-forge-imai/blob/main/screenshots.gif)
 
 # Acknowledgments
 Special thanks to [Imai Optics](http://www.imaioptics.com/) for supporting the project by providing a discount on [YM_RPL_785_500](https://aliexpress.ru/item/1005010193725685.html?spm=a2g2w.orderdetail.0.0.20384aa6LKfzBg&sku_id=12000051478540187&_ga=2.6013747.1429933141.1770309479-1631170546.1742897773), which was instrumental in testing and validating the software. Their high-quality equipment ensured reliable performance during development.

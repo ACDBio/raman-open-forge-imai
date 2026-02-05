@@ -104,6 +104,11 @@ python3 Main.py
 ```
 
 # Usage
+Here we show usage of the software in the process of software Raman shift calibration.
+1.Obtaining acetone spectrum (the probe YM_RPL_785_500 and 3d printed quartz cuvette holder was used), comparing with reference database spectrum,
+peak search and performing software calibration using a polynomial fit
+![calib_1_acetone-2026-02-04_00 54 32](https://github.com/user-attachments/assets/9c89dbdb-be90-4651-bd4b-7e9fe6e91118)
+2. 
 
 
 

@@ -96,7 +96,7 @@ Pipeline based on ramanspy:
 
 
 ## Installation
-```python
+```bash
 git clone [https://github.com/yourusername/line-spectra-viewer.git](https://github.com/ACDBio/raman-open-forge-imai)
 cd raman-open-forge-imai
 pip install PyQt5 pyqtgraph numpy scipy pandas ramanspy pyserial

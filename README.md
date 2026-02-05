@@ -9,7 +9,7 @@ The application is designed to streamline Raman spectroscopy tasks, from data co
 Key capabilities include device parameter control, background subtraction, Raman shift calibration to correct peak positions, spectral preprocessing pipelines, peak detection, database management, and similarity-based searches with multiple metrics.
 
 ## [Ramanbase.org](https://ramanbase.org/) integration
-We  provide .ipynb showing how to make custom reference databases based on ramanbase.org spectra for working with the app. An example of a small-scale database is presented here () and a larger processed database covering ~85k spectra can be downloaded [here](https://huggingface.co/datasets/khittit15/ramanbase-for-imai-app/blob/main/rbase_specdictcur.zip).
+We  provide [.ipynb](https://github.com/ACDBio/raman-open-forge-imai/blob/main/RBaseproc.ipynb) showing how to make custom reference databases based on ramanbase.org spectra for working with the app. An example of a small-scale database is presented here () and a larger processed database covering ~85k spectra can be downloaded [here](https://huggingface.co/datasets/khittit15/ramanbase-for-imai-app/blob/main/rbase_specdictcur.zip).
 
 Key capabilities include:
 

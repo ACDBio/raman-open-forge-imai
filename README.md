@@ -52,9 +52,9 @@ Key capabilities include:
 
 Pipeline based on ramanspy:
  - Crop region (min/max shift).
- - Savitzky-Golay denoising (window length, poly order).
+ - Savitzky-Golay denoising.
  - ASLS baseline correction.
- - Normalization (MinMax or Vector).
+ - Normalization (MinMax).
 
  - Peak finding with prominence and width thresholds.
  - Processed spectrum plotting with peak labels.

@@ -103,4 +103,14 @@ pip install PyQt5 pyqtgraph numpy scipy pandas ramanspy pyserial
 python3 Main.py
 ```
 
-![calib_0](https://github.com/user-attachments/assets/3e29ccb8-ef0c-4062-9ce2-c1112adef72e)
+# Usage
+
+
+
+# Acknowledgments
+Special thanks to [Imai Optics](http://www.imaioptics.com/) for supporting the project by providing a discount on [YM_RPL_785_500](https://aliexpress.ru/item/1005010193725685.html?spm=a2g2w.orderdetail.0.0.20384aa6LKfzBg&sku_id=12000051478540187&_ga=2.6013747.1429933141.1770309479-1631170546.1742897773), which was instrumental in testing and validating the software. Their high-quality equipment ensured reliable performance during development.
+# Contributing
+Contributions are welcome! Please submit issues or pull requests for bugs, features, or improvements.
+This project is licensed under the MIT License - see the LICENSE file for details.<|control12|># Line Spectra Viewer
+
+

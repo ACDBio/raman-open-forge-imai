@@ -27,11 +27,11 @@ Key capabilities include:
 ## Features
 ### Device Connection and Control
 
- - Scan and connect to serial ports (e.g., USB spectrometers).
- - Set integration time (1–60,000 ms), hardware averaging (1–255).
- - Advanced settings: gain (0–255), offset (-255–255), laser voltage (0–5000 mV), trigger out (HIGH/LOW), smoothing level (1–10).
- - Read current device parameters on connection.
- - Save parameters to device flash.
+ - Scan and connect to serial ports (e.g., USB spectrometers). 
+ - Set integration time (1–60,000 ms), hardware averaging (1–255). 
+ - Advanced settings: gain (0–255), offset (-255–255), laser voltage (0–5000 mV), trigger out (HIGH/LOW), smoothing level (1–10). 
+ - Read current device parameters on connection. 
+ - Save parameters to device flash. 
 
 ### Spectrum Acquisition
 

@@ -1,7 +1,5 @@
 # raman-open-forge-imai
 
-![App Screenshot](path/to/screenshot.png)  <!-- Replace with actual screenshot if available -->
-
 A user-friendly PyQt5-based application for controlling line spectrometers, acquiring spectral data, performing Raman shift conversions with calibration, preprocessing spectra, managing a reference database, and searching for spectral matches. Optimized for Raman spectroscopy workflows. The app is specifically optimized for Hamamatsu CCD sensors and has been tested with the IRM785 spectrometer from Imai Optics. It supports DIY Raman systems based on Hamamatsu CCDs (see separate GitHub repository for details).
 It also allows laser control for Imai Optics probe YM_RPL_785_500.
 

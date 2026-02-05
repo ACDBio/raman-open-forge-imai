@@ -1,7 +1,7 @@
 # raman-open-forge-imai
 
-A user-friendly PyQt5-based application for controlling line spectrometers, acquiring spectral data, performing Raman shift conversions with calibration, preprocessing spectra, managing a reference database, and searching for spectral matches. Optimized for Raman spectroscopy workflows. The app is specifically optimized for Hamamatsu CCD sensors and has been tested with the IRM785 spectrometer from Imai Optics. It supports DIY Raman systems based on Hamamatsu CCDs (see separate GitHub repository for details).
-It also allows laser control for Imai Optics probe YM_RPL_785_500.
+A user-friendly PyQt5-based application for controlling line spectrometers, acquiring spectral data, performing Raman shift conversions with calibration, preprocessing spectra, managing a reference database, and searching for spectral matches. Optimized for Raman spectroscopy workflows. The app is specifically optimized for Hamamatsu CCD sensors and has been tested with the [IRM785](https://aliexpress.ru/item/1005009187077048.html?shpMethod=CAINIAO_STANDARD&sku_id=12000048233983566&spm=a2g2w.productlist.search_results.1.44623a79XC6PAZ) spectrometer from Imai Optics. It supports DIY Raman systems based on Hamamatsu CCDs (see separate GitHub repository for details).
+It also allows laser control for [Imai Optics](http://www.imaioptics.com/) probe [YM_RPL_785_500](https://aliexpress.ru/item/1005010193725685.html?spm=a2g2w.orderdetail.0.0.20384aa6LKfzBg&sku_id=12000051478540187&_ga=2.6013747.1429933141.1770309479-1631170546.1742897773).
 
 ## Overview
 Raman Open Forge Imai provides an integrated interface for spectrometer operation and data analysis. It handles device communication via serial port, real-time spectrum acquisition, advanced preprocessing using the `ramanspy` library, software/hardware calibration, and a database management for storing and querying reference spectra.
@@ -109,8 +109,9 @@ python3 Main.py
 
 # Acknowledgments
 Special thanks to [Imai Optics](http://www.imaioptics.com/) for supporting the project by providing a discount on [YM_RPL_785_500](https://aliexpress.ru/item/1005010193725685.html?spm=a2g2w.orderdetail.0.0.20384aa6LKfzBg&sku_id=12000051478540187&_ga=2.6013747.1429933141.1770309479-1631170546.1742897773), which was instrumental in testing and validating the software. Their high-quality equipment ensured reliable performance during development.
+Also thyanks to ramanbase.org developers and contributors and ramanspy developers.
 # Contributing
-Contributions are welcome! Please submit issues or pull requests for bugs, features, or improvements.
+Contributions are welcome! Please submit issues or pull requests for bugs, features, or improvements. The software is at the active development stage.
 This project is licensed under the MIT License - see the LICENSE file for details.<|control12|># Line Spectra Viewer
 
 

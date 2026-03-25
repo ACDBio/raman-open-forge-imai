@@ -78,6 +78,12 @@ Pipeline based on ramanspy:
  - Top-N results display and download as CSV.
  - Reference plotting from search results or entire database.
 
+### Motorized table control and automated scans
+ - Includes code for interaction with motorized XY stage based on two stepper motors.
+ - Manual navigation and automated Raman probe scans.
+![Motorized table control]([https://github.com/ACDBio/raman-open-forge-imai/blob/main/calib_1_acetone.gif](https://github.com/ACDBio/raman-open-forge-imai/blob/main/motorcontrol.png))
+
+
 ### Plotting and Visualization
 
  - Interactive plots using pyqtgraph.

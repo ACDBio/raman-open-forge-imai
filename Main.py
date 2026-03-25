@@ -14,6 +14,7 @@ import warnings
 import copy
 import os
 warnings.filterwarnings("ignore", category=RuntimeWarning)
+
 class SpectrometerApp(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -22,8 +23,8 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         self.continuous_mode = False
         self.background_spectrum = None
         self.average_count = 1
-        self.wavelength_min = 796
-        self.wavelength_max = 1119
+        self.wavelength_min = 790
+        self.wavelength_max = 1100
         self.wavelengths = np.linspace(self.wavelength_min, self.wavelength_max, 2048)
         self.frame_count = 0
         self.start_time = time.time()
@@ -49,12 +50,6 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             2: "Raman shift (cm⁻¹)",
             3: "Analog / Intensity corr."
         }
-        self.calib_coeffs_soft = None # [a, b, c] for ax^2 + bx + c
-        self.is_calibrated = False
-        self.current_calib_path = None
-        self.spectral_axis = None
-        self.use_raman = False
-        self.smoothing_level = 6  # default
         self.init_ui()
         default_path = os.getcwd()+"/rbase_specdictcur.pkl"
         if os.path.exists(default_path):
@@ -69,7 +64,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         else:
             self.log("Default database file not found. Please load one manually.")
             self.specdict = {}
-        self.load_default_calibration()
+           
         self.searchres = None
         self.peak_lines = []
         self.peak_labels = []
@@ -81,38 +76,70 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         self.create_process_panel()
         self.create_manage_db_panel()
         self.create_advanced_panel()
-    def load_default_calibration(self):
-        default_path = "calibration_cur.csv"
-        if os.path.exists(default_path):
-            try:
-                df = pd.read_csv(default_path, header=None)
-                self.calib_coeffs_soft = df.values.flatten()[:3].tolist()
-                self.current_calib_path = default_path
-                self.is_calibrated = True
-                self.use_raman = True
-                self.log(f"Loaded default calibration: {self.calib_coeffs_soft}")
-            except Exception as e:
-                self.log(f"Failed to load default calibration: {e}")
-                self.calib_coeffs_soft = None
-                self.is_calibrated = False
-                self.use_raman = False
-        else:
-            self.log("Calibration file not found")
-            self.calib_coeffs_soft = None
-            self.is_calibrated = False
-            self.use_raman = False
+
+        self.stage_serial = None
+        self._stage_abort_flag = False
+        self.create_stage_panel()
+        # Allow dock widgets to resize and main window to stay compact
+        self.setDockOptions(
+            QtWidgets.QMainWindow.AnimatedDocks |
+            QtWidgets.QMainWindow.AllowNestedDocks |
+            QtWidgets.QMainWindow.AllowTabbedDocks
+        )
+        # Central widget can shrink
+        self.centralWidget().setMinimumWidth(400)
+        self.centralWidget().setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Preferred
+        )
+
+
+
+        self.stage_refresh_ports()
+
     def init_ui(self):
         self.setWindowTitle('Line Spectra Viewer v2.0')
+        # --- ADD THIS: smaller font for compact layout ---
+        font = self.font()
+        font.setPointSize(8)
+        self.setFont(font)
+        # --- END ADD ---
+        screen = QtWidgets.QDesktopWidget().screenGeometry()
+    
+
         screen = QtWidgets.QDesktopWidget().screenGeometry()
         self.resize(int(screen.width() * 0.8), int(screen.height() * 0.85))
         self.move(int(screen.width() * 0.1), int(screen.height() * 0.075))
+
+
         central_widget = QtWidgets.QWidget()
+        central_widget.setMinimumWidth(400)
+        self.setCentralWidget(central_widget)
         layout = QtWidgets.QVBoxLayout(central_widget)
-        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setContentsMargins(3, 3, 3, 3)
         layout.setSpacing(1)
+
+
+        control_widget = QtWidgets.QWidget()
         control_layout = self.create_control_layout()
-        layout.addLayout(control_layout)
+        control_widget.setLayout(control_layout)
+        control_scroll = QtWidgets.QScrollArea()
+        control_scroll.setWidget(control_widget)
+        control_scroll.setWidgetResizable(True)
+        control_scroll.setMaximumHeight(50)
+        control_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        control_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        layout.addWidget(control_scroll)
+
+
+
         self.plot_widget = pg.PlotWidget(background='w')
+        self.plot_widget.setMinimumWidth(300)
+        self.plot_widget.setMinimumHeight(200)
+        sp = self.plot_widget.sizePolicy()
+        sp.setHorizontalStretch(1)
+        sp.setHorizontalPolicy(QtWidgets.QSizePolicy.Expanding)
+        self.plot_widget.setSizePolicy(sp)
         layout.addWidget(self.plot_widget)
         self.plot_curve_1 = self.plot_widget.plot(pen=pg.mkPen('b', width=2), name="Spectrum")
         self.plot_curve_ref = self.plot_widget.plot(pen=pg.mkPen('g', width=2), name="Reference")
@@ -129,21 +156,33 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         self.log_widget.setMaximumHeight(120)
         self.log_widget.setPlaceholderText("Application log...")
         layout.addWidget(self.log_widget)
-        central_scroll = QtWidgets.QScrollArea()
-        central_scroll.setWidget(central_widget)
-        central_scroll.setWidgetResizable(True)
-        central_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        central_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.setCentralWidget(central_scroll)
         self.process_dock = QtWidgets.QDockWidget("Process Spectra", self)
         self.process_dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.process_dock)
         self.process_dock.setVisible(False)
+
+
+        
         self.calib_dock = QtWidgets.QDockWidget("Calibration", self)
         self.calib_dock.setAllowedAreas(QtCore.Qt.RightDockWidgetArea | QtCore.Qt.LeftDockWidgetArea)
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.calib_dock)
         self.calib_dock.setVisible(False)
         self.calib_dock.setMinimumWidth(380)
+
+        self.process_dock = QtWidgets.QDockWidget("Process Spectra", self)
+        self.process_dock.setAllowedAreas(
+            QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea
+        )
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.process_dock)
+        self.process_dock.setVisible(False)
+        self.process_dock.setMinimumWidth(350)
+        self.process_dock.setMaximumWidth(550)
+
+
+        
+
+
+
         calib_widget = QtWidgets.QWidget()
         calib_layout = QtWidgets.QVBoxLayout(calib_widget)
         self.calib_tabs = QtWidgets.QTabWidget()
@@ -158,34 +197,6 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                 spin.setSingleStep(0.000001 if i < 2 else 0.001)
                 lay.addRow(f"{coef}:", spin)
             self.calib_tabs.addTab(tab, self.calib_group_names[grp])
-        # Software Calibration tab
-        tab_soft = QtWidgets.QWidget()
-        lay_soft = QtWidgets.QVBoxLayout(tab_soft)
-        self.lbl_current_calib = QtWidgets.QLabel("No calibration loaded")
-        self.lbl_current_calib.setStyleSheet("color: gray; font-style: italic;")
-        lay_soft.addWidget(self.lbl_current_calib)
-        btn_load_calib = QtWidgets.QPushButton("Load Calibration...")
-        btn_load_calib.clicked.connect(self.load_calibration_file)
-        lay_soft.addWidget(btn_load_calib)
-        btn_save_calib = QtWidgets.QPushButton("Save Calibration as...")
-        btn_save_calib.clicked.connect(self.save_calibration_as)
-        lay_soft.addWidget(btn_save_calib)
-        btn_save_default_calib = QtWidgets.QPushButton("Save as Default")
-        btn_save_default_calib.clicked.connect(self.save_as_default_calib)
-        lay_soft.addWidget(btn_save_default_calib)
-        lay_soft.addStretch()
-        self.calib_tabs.addTab(tab_soft, "Software Calib")
-        # Perform Calibration tab
-        tab_perform = QtWidgets.QWidget()
-        lay_perform = QtWidgets.QVBoxLayout(tab_perform)
-        self.calib_table = QtWidgets.QTableWidget(10, 2)
-        self.calib_table.setHorizontalHeaderLabels(["Observed Raman Shift (cm⁻¹)", "Expected Raman Shift (cm⁻¹)"])
-        lay_perform.addWidget(self.calib_table)
-        btn_fit = QtWidgets.QPushButton("Fit Polynomial")
-        btn_fit.clicked.connect(self.fit_calibration)
-        lay_perform.addWidget(btn_fit)
-        lay_perform.addStretch()
-        self.calib_tabs.addTab(tab_perform, "Perform Calib")
         calib_layout.addWidget(self.calib_tabs)
         btn_read = QtWidgets.QPushButton("Read All Coefficients from Device")
         btn_read.clicked.connect(self.read_all_calibration)
@@ -200,89 +211,11 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         btn_preview.clicked.connect(self.preview_calibration_axis)
         calib_layout.addWidget(btn_preview)
         calib_layout.addStretch()
-        calib_scroll = QtWidgets.QScrollArea()
-        calib_scroll.setWidget(calib_widget)
-        calib_scroll.setWidgetResizable(True)
-        calib_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        calib_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.calib_dock.setWidget(calib_scroll)
+        self.calib_dock.setWidget(calib_widget)
         btn_calib = QtWidgets.QPushButton("Calibration...")
         btn_calib.clicked.connect(lambda: self.calib_dock.setVisible(not self.calib_dock.isVisible()))
         control_layout.addWidget(btn_calib)
-    def load_calibration_file(self):
-        file_name, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Calibration", "", "CSV Files (*.csv)")
-        if file_name:
-            try:
-                df = pd.read_csv(file_name, header=None)
-                self.calib_coeffs_soft = df.values.flatten()[:3].tolist()
-                self.current_calib_path = file_name
-                self.is_calibrated = True
-                self.use_raman = True
-                self.checkbox_to_raman.setChecked(True)
-                self.lbl_current_calib.setText(f"Calib: {os.path.basename(file_name)}")
-                self.lbl_current_calib.setStyleSheet("color: green;")
-                self.log(f"Loaded calibration: {file_name} coeffs {self.calib_coeffs_soft}")
-                if self.current_spectrum_1 is not None and not self.cur_spectrum_is_db:
-                    self.spectral_axis = self.get_current_axis()
-                    self.update_plot(self.spectral_axis, self.current_spectrum_1)
-            except Exception as e:
-                self.log(f"Failed to load calibration: {e}")
-    def save_calibration_as(self):
-        if self.calib_coeffs_soft is None:
-            self.log("No calibration to save")
-            return
-        file_name, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Calibration", "", "CSV Files (*.csv)")
-        if file_name:
-            try:
-                pd.DataFrame(self.calib_coeffs_soft).to_csv(file_name, index=False, header=False)
-                self.log(f"Saved calibration to {file_name}")
-            except Exception as e:
-                self.log(f"Failed to save calibration: {e}")
-    def save_as_default_calib(self):
-        if self.calib_coeffs_soft is None:
-            self.log("No calibration to save")
-            return
-        default_path = "calibration_cur.csv"
-        if os.path.exists(default_path):
-            reply = QtWidgets.QMessageBox.question(self, "Overwrite?", "Overwrite default calibration?", QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-            if reply != QtWidgets.QMessageBox.Yes:
-                return
-        try:
-            pd.DataFrame(self.calib_coeffs_soft).to_csv(default_path, index=False, header=False)
-            self.current_calib_path = default_path
-            self.lbl_current_calib.setText(f"Calib: {os.path.basename(default_path)} (default)")
-            self.lbl_current_calib.setStyleSheet("color: green;")
-            self.log(f"Saved as default calibration: {default_path}")
-        except Exception as e:
-            self.log(f"Failed to save default calibration: {e}")
-    def fit_calibration(self):
-        observed_shifts = []
-        expected_shifts = []
-        for row in range(self.calib_table.rowCount()):
-            obs_item = self.calib_table.item(row, 0)
-            exp_item = self.calib_table.item(row, 1)
-            if obs_item and exp_item:
-                try:
-                    obs = float(obs_item.text())
-                    exp = float(exp_item.text())
-                    observed_shifts.append(obs)
-                    expected_shifts.append(exp)
-                except:
-                    pass
-        if len(observed_shifts) < 3:
-            QtWidgets.QMessageBox.warning(self, "Error", "Need at least 3 points for quadratic fit")
-            return
-        coeffs = np.polyfit(observed_shifts, expected_shifts, 2)
-        self.calib_coeffs_soft = coeffs.tolist()
-        self.is_calibrated = True
-        self.use_raman = True
-        self.checkbox_to_raman.setChecked(True)
-        self.log(f"Fitted calibration coeffs: {self.calib_coeffs_soft}")
-        self.lbl_current_calib.setText("Calib: Fitted (unsaved)")
-        self.lbl_current_calib.setStyleSheet("color: blue;")
-        if self.current_spectrum_1 is not None and not self.cur_spectrum_is_db:
-            self.spectral_axis = self.get_current_axis()
-            self.update_plot(self.spectral_axis, self.current_spectrum_1)
+
     def create_control_layout(self):
         control_layout = QtWidgets.QHBoxLayout()
         self.combo_ports = QtWidgets.QComboBox()
@@ -357,8 +290,14 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         btn_advanced = QtWidgets.QPushButton('Advanced...')
         btn_advanced.clicked.connect(lambda: self.advanced_dock.setVisible(not self.advanced_dock.isVisible()))
         control_layout.addWidget(btn_advanced)
+        btn_stage = QtWidgets.QPushButton('Stage Control...')
+        btn_stage.clicked.connect(
+            lambda: self.stage_dock.setVisible(not self.stage_dock.isVisible())
+        )
+        control_layout.addWidget(btn_stage)
         control_layout.addStretch()
         return control_layout
+
     def create_manage_db_panel(self):
         self.manage_db_dock = QtWidgets.QDockWidget("Manage Database", self)
         self.manage_db_dock.setAllowedAreas(QtCore.Qt.LeftDockWidgetArea | QtCore.Qt.RightDockWidgetArea)
@@ -391,12 +330,8 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         btn_save_as_default.clicked.connect(self.save_as_default_database)
         db_layout.addWidget(btn_save_as_default)
         db_layout.addStretch()
-        db_scroll = QtWidgets.QScrollArea()
-        db_scroll.setWidget(db_widget)
-        db_scroll.setWidgetResizable(True)
-        db_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        db_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.manage_db_dock.setWidget(db_scroll)
+        self.manage_db_dock.setWidget(db_widget)
+
     def create_advanced_panel(self):
         self.advanced_dock = QtWidgets.QDockWidget("Advanced Settings", self)
         self.advanced_dock.setAllowedAreas(QtCore.Qt.RightDockWidgetArea)
@@ -432,77 +367,8 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         btn_set_offset = QtWidgets.QPushButton('Set Offset')
         btn_set_offset.clicked.connect(self.set_offset)
         adv_layout.addWidget(btn_set_offset)
-        adv_layout.addWidget(QtWidgets.QLabel('Start Wavelength:'))
-        self.spin_start_wl = QtWidgets.QSpinBox()
-        self.spin_start_wl.setRange(200, 2000)
-        self.spin_start_wl.setValue(self.wavelength_min)
-        adv_layout.addWidget(self.spin_start_wl)
-        adv_layout.addWidget(QtWidgets.QLabel('End Wavelength:'))
-        self.spin_end_wl = QtWidgets.QSpinBox()
-        self.spin_end_wl.setRange(200, 2000)
-        self.spin_end_wl.setValue(self.wavelength_max)
-        adv_layout.addWidget(self.spin_end_wl)
-        btn_set_range = QtWidgets.QPushButton('Set Range')
-        btn_set_range.clicked.connect(self.set_wavelength_range)
-        adv_layout.addWidget(btn_set_range)
         adv_layout.addStretch()
-
-        adv_layout.addWidget(QtWidgets.QLabel('Smoothing Level (1-10):'))
-        self.spin_smooth = QtWidgets.QSpinBox()
-        self.spin_smooth.setRange(1, 10)
-        self.spin_smooth.setValue(self.smoothing_level)
-        self.spin_smooth.valueChanged.connect(self.set_smoothing_level)
-        adv_layout.addWidget(self.spin_smooth)
-
-        btn_set_smooth = QtWidgets.QPushButton('Apply Smoothing')
-        btn_set_smooth.clicked.connect(lambda: self.set_smoothing_level(self.spin_smooth.value()))
-        adv_layout.addWidget(btn_set_smooth)
-
-
-        adv_scroll = QtWidgets.QScrollArea()
-        adv_scroll.setWidget(adv_widget)
-        adv_scroll.setWidgetResizable(True)
-        adv_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        adv_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.advanced_dock.setWidget(adv_scroll)
-
-    def set_smoothing_level(self, level):
-            if not self.serial_port.is_open:
-                self.log("Cannot set smoothing: port not open")
-                return
-            level = max(1, min(10, int(level)))
-            self.send_command_with_data(0x25, level, 0x00)
-            self.smoothing_level = level
-            self.log(f"Smoothing level set to {level}")
-
-
-    def set_wavelength_range(self):
-        self.wavelength_min = self.spin_start_wl.value()
-        self.wavelength_max = self.spin_end_wl.value()
-        self.wavelengths = np.linspace(self.wavelength_min, self.wavelength_max, 2048)
-        self.log(f"Updated wavelength range: {self.wavelength_min} - {self.wavelength_max}")
-        if self.current_spectrum_1 is not None:
-            self.spectral_axis = self.get_current_axis()
-            self.update_plot(self.spectral_axis, self.current_spectrum_1)
-    def get_current_axis(self):
-        if self.use_raman:
-            initial_shifts = rp.utils.wavelength_to_wavenumber(self.wavelengths, self.exc_wlen_spin.value())
-            if self.is_calibrated and self.calib_coeffs_soft:
-                a, b, c = self.calib_coeffs_soft
-                calibrated_shifts = a * initial_shifts**2 + b * initial_shifts + c
-                return calibrated_shifts
-            else:
-                return initial_shifts
-        else:
-            return self.wavelengths
-        
-
-    def on_to_raman_changed(self, state):
-        self.use_raman = state == QtCore.Qt.Checked
-        if self.current_spectrum_1 is not None and not self.cur_spectrum_is_db:
-            self.spectral_axis = self.get_current_axis()
-            self.update_plot(self.spectral_axis, self.current_spectrum_1, zoom=True)
-            self.plot_widget.setLabel('bottom', 'Raman shift (cm<sup>-1</sup>)' if self.use_raman else 'Wavelength (nm)')
+        self.advanced_dock.setWidget(adv_widget)
 
     def toggle_manage_db_panel(self):
         self.manage_db_dock.setVisible(not self.manage_db_dock.isVisible())
@@ -513,23 +379,20 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             else:
                 self.lbl_current_db.setText("No database loaded")
                 self.lbl_current_db.setStyleSheet("color: gray; font-style: italic;")
+
     def create_process_panel(self):
         process_widget = QtWidgets.QWidget()
         process_layout = QtWidgets.QVBoxLayout(process_widget)
         wlen_group = QtWidgets.QGroupBox("Excitation wavelength")
         wlen_layout = QtWidgets.QHBoxLayout()
-        self.checkbox_to_raman = QtWidgets.QCheckBox("Convert to Raman Shifts")
-        self.checkbox_to_raman.setChecked(self.use_raman)
-        self.checkbox_to_raman.stateChanged.connect(self.on_to_raman_changed)
-        wlen_layout.addWidget(self.checkbox_to_raman)
         self.exc_wlen_spin = QtWidgets.QSpinBox(self)
         self.exc_wlen_spin.setRange(0, 1000)
-        self.exc_wlen_spin.setValue(785)
+        self.exc_wlen_spin.setValue(780)
         self.exc_wlen_spin.setSingleStep(1)
         wlen_layout.addWidget(self.exc_wlen_spin)
         wlen_group.setLayout(wlen_layout)
         process_layout.addWidget(wlen_group)
-      
+       
         crop_group = QtWidgets.QGroupBox("Crop Region")
         crop_layout = QtWidgets.QHBoxLayout()
         self.checkbox_crop = QtWidgets.QCheckBox("Enable")
@@ -665,20 +528,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         self.spin_topn.setValue(5)
         topn_layout.addWidget(self.spin_topn)
         search_layout.addLayout(topn_layout)
-        self.combo_reference = QtWidgets.QComboBox() #n
-        self.combo_reference.setEditable(True)                      
-        self.combo_reference.setInsertPolicy(QtWidgets.QComboBox.NoInsert)  
-        self.combo_reference.setDuplicatesEnabled(False)
-
-     
-        completer = self.combo_reference.completer()
-        completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)     
-        completer.setFilterMode(QtCore.Qt.MatchContains)            
-        completer.setCompletionMode(QtWidgets.QCompleter.PopupCompletion)
-        self.combo_reference.setCompleter(completer)
-
-
-
+        self.combo_reference = QtWidgets.QComboBox()
         self.combo_reference.addItem("None")
         self.combo_reference.currentIndexChanged.connect(self.plot_reference)
         search_layout.addWidget(QtWidgets.QLabel("Plot Reference:"))
@@ -701,12 +551,8 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         btn_layout.addWidget(self.btn_revert)
         process_layout.addLayout(btn_layout)
         process_layout.addStretch()
-        process_scroll = QtWidgets.QScrollArea()
-        process_scroll.setWidget(process_widget)
-        process_scroll.setWidgetResizable(True)
-        process_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        process_scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.process_dock.setWidget(process_scroll)
+        self.process_dock.setWidget(process_widget)
+
     def set_db_spectrum_forproc(self):
         self.plot_db_spectrum()
         self.current_spectrum_1=self.rspec.spectral_data
@@ -720,7 +566,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         self.plot_widget.setLabel('bottom', 'Raman shift (cm<sup>-1</sup>)')
         self.cur_spectrum_is_db=True
         return
-  
+   
     def toggle_process_panel(self):
         if self.current_spectrum_1 is None:
             QtWidgets.QMessageBox.information(self, "No Data", "Acquire a spectrum first.")
@@ -728,12 +574,13 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         self.process_dock.setVisible(not self.process_dock.isVisible())
         if self.process_dock.isVisible():
             self.original_spectrum = self.current_spectrum_1.copy()
-            self.update_reference_combo_all()
+
     def update_serial_ports(self):
         self.combo_ports.clear()
         ports = serial.tools.list_ports.comports()
         for port in ports:
             self.combo_ports.addItem(port.device)
+
     def connect_serial(self):
         if self.serial_port.is_open:
             return
@@ -759,50 +606,13 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             self.log("Initial integration time unavailable")
         self.read_gain()
         self.read_offset()
-        self.read_smoothing_level()
-
-    # def update_reference_combo_all(self):
-    #     """Заполняет combo_reference всеми спектрами из базы"""
-    #     self.combo_reference.clear()
-    #     self.combo_reference.addItem("None")
-        
-    #     if self.specdict:
-    #         # Сортируем по имени для удобства
-    #         sorted_names = sorted(self.specdict.keys())
-    #         for name in sorted_names:
-    #             self.combo_reference.addItem(name)
-        
-    #     self.log(f"Reference combo updated with {len(sorted_names)} spectra from database")
-
-    def update_reference_combo_all(self):
-        self.combo_reference.clear()
-        self.combo_reference.addItem("None")
-
-        if not self.specdict:
-            self.log("База пуста")
-            return
-
-        # Собираем пары (отображаемое имя, ключ)
-        items = []
-        for key, data in self.specdict.items():
-            display_name = data.get('name', f"Спектр {key}")  # если 'name' нет — fallback
-            items.append((display_name, key))
-
-        # Сортируем по отображаемому имени
-        items.sort(key=lambda x: x[0])
-
-        for display_name, _ in items:
-            self.combo_reference.addItem(display_name)
-
-        self.log(f"Добавлено {len(items)} спектров в список референсов")
-
-
 
     def close_serial(self):
         if self.serial_port.is_open:
             self.pause_acquisition()
             self.serial_port.close()
             self.status_bar.showMessage("Port closed", 2000)
+
     def single_acquisition(self):
         self.rspec=None
         self.cur_spectrum_is_db=False
@@ -829,27 +639,29 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         if not self.serial_port.is_open:
             QtWidgets.QMessageBox.warning(self, "Error", "Serial port not open!")
             return
-      
+       
         self.progress_bar.setRange(0, 0) # Indeterminate
         self.progress_bar.show()
         QtWidgets.QApplication.processEvents()
         self.send_command(0x01)
         data_1 = self.read_spectral_data().astype(np.float64)
+
+        # Let user see the busy indicator briefly
         time.sleep(0.15)
         QtWidgets.QApplication.processEvents()
         self.progress_bar.hide()
         if len(data_1) != 2048:
             data_1 = np.zeros(2048)
         if self.background_spectrum is not None:
-            data_1 = data_1 - self.background_spectrum
+            data_1 = data_1 - self.background_spectrum #np.maximum(data_1 - self.background_spectrum, 0)
         self.current_spectrum_1 = data_1.copy()
         self.original_spectrum = data_1.copy()
-        self.spectral_axis = self.get_current_axis()
-        self.update_plot(self.spectral_axis, data_1)
+        self.update_plot(self.wavelengths, data_1)
         self.update_fps()
         self.collection_count += 1
         self.collection_label.setText(f"Acquisitions: {self.collection_count}")
         self.on_zoom_checkbox_changed()
+
     def continuous_acquisition(self):
         self.rspec=None
         self.cur_spectrum_is_db=False
@@ -880,6 +692,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         while self.continuous_mode:
             self.single_acquisition_logic()
             QtWidgets.QApplication.processEvents()
+
     def single_acquisition_logic(self):
         self.progress_bar.setRange(0, 0) # Indeterminate
         self.progress_bar.show()
@@ -891,22 +704,24 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             data_1 = np.maximum(data_1 - self.background_spectrum, 0)
         self.current_spectrum_1 = data_1.copy()
         self.original_spectrum = data_1.copy()
-        self.spectral_axis = self.get_current_axis()
-        self.update_plot(self.spectral_axis, data_1)
+        self.update_plot(self.wavelengths, data_1)
         self.update_fps()
         self.collection_count += 1
         self.collection_label.setText(f"Acquisitions: {self.collection_count}")
         self.frame_counter += 1
         self.on_zoom_checkbox_changed()
         self.progress_bar.hide()
+
     def pause_acquisition(self):
         self.continuous_mode = False
         self.send_command(0x06)
+
     def send_command(self, cmd_byte):
         cmd = bytearray([0x81, cmd_byte, 0x00, 0x00])
         crc = sum(cmd) & 0xFF
         cmd.append(crc)
         self.serial_port.write(cmd)
+
     def read_reply(self, expected_cmd, timeout=1):
         start = time.time()
         buf = bytearray()
@@ -922,6 +737,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                     buf = buf[1:]
             time.sleep(0.001)
         return None
+
     def get_integration_time(self):
         time.sleep(0.3)
         self.serial_port.reset_input_buffer()
@@ -935,6 +751,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         time_val = (reply[2] << 8) | reply[3]
         self.log(f"Device integration time value = {time_val}")
         return time_val
+
     def get_integration_unit(self):
         time.sleep(0.3)
         self.serial_port.reset_input_buffer()
@@ -949,9 +766,11 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         unit_str = "ms" if unit == 0x00 else "µs"
         self.log(f"Device integration unit = {unit_str}")
         return unit
+
     def set_trigger_mode(self, mode):
         self.send_command_with_data(0x07, mode, 0x00)
         self.log(f"Trigger mode set to {mode} (0: soft, 1: external continuous, 2: external monopulse)")
+
     def set_integration_time(self):
         if not self.serial_port.is_open:
             return
@@ -980,23 +799,27 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             self.log(f"CONFIRMED by device: {val} ms")
         else:
             self.log("Integration time readback unavailable (firmware busy)")
-     
+      
         time_ms = self.spin_integration_time.value()
         self.serial_port.timeout = (time_ms / 1000.0) + 10.0
         self.log(f"Serial timeout updated to {self.serial_port.timeout} seconds")
         self.save_parameters()
+
     def save_parameters(self):
         self.send_command_with_data(0x22, 0x00, 0x00)
         self.log("Parameters saved to device")
+
     def send_command_with_data(self, cmd, d1, d2):
         cmd = bytearray([0x81, cmd, d1, d2])
         crc = sum(cmd) & 0xFF
         cmd.append(crc)
         self.serial_port.write(cmd)
         self.log(f"Sent command {cmd}")
+
     def set_average_count(self, value):
         self.average_count = value
         self.set_hardware_average(value)
+
     def read_spectral_data(self):
         if not self.serial_port.is_open:
             return np.zeros(2048)
@@ -1015,16 +838,8 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         data_1 = pixel_data[:min(4096, length)]
         spectral_data_1 = np.frombuffer(data_1, dtype='>u2') if len(data_1) == 4096 else np.zeros(2048)
         return spectral_data_1
+
     def update_plot(self, x, y, zoom=False):
-        # Interpolate to uniform axis if Raman and non-uniform to avoid visual broadening
-#        if self.use_raman:
-#            diff = np.diff(x)
-#            if len(np.unique(diff.round(decimals=4))) > 1:  # non-uniform
-#                uniform_x = np.linspace(np.min(x), np.max(x), len(x))
-#                interp_func = interp1d(x, y, kind='linear', fill_value='extrapolate')
-#                y = interp_func(uniform_x)
-#                x = uniform_x
-#                self.log("Interpolated spectrum to uniform Raman shift axis for plotting")
         self.plot_curve_1.setData(x, y)
         if self.checkbox_zoom.isChecked() or zoom==True:
             min_y = np.min(y)
@@ -1032,6 +847,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             self.plot_widget.setYRange(min_y, max_y)
             self.plot_widget.setXRange(np.min(x), np.max(x))
         else:
+            self.plot_curve_1.setData(x, y)
             self.plot_widget.setYRange(0, 65535)
         if np.max(x) > 1500:
             self.plot_widget.setLabel('bottom', 'Raman shift (cm<sup>-1</sup>)')
@@ -1054,19 +870,22 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                 text.setPos(pos, y[peak])
                 self.plot_widget.addItem(text)
                 self.peak_labels.append(text)
+
     def apply_processing(self):
         if self.original_spectrum is None:
             return
         spectrum = np.array(self.original_spectrum.copy())
-        if self.cur_spectrum_is_db:
-            specax = self.spectral_axis
+        if self.cur_spectrum_is_db==False:
+            x = self.wavelengths.copy()
+            specax=rp.utils.wavelength_to_wavenumber(np.array(x), self.exc_wlen_spin.value())
+            self.log(f'New spectral axis: {specax}')
         else:
-            specax = self.get_current_axis()
-        robj = rp.SpectralContainer(np.array([spectrum]), specax)
+            specax=self.spectral_axis
+        robj=rp.SpectralContainer(np.array([spectrum]), specax)
         self.log(f'Robj specax: {robj.spectral_axis}')
-        proclist = []
+        proclist=[]
         if self.checkbox_crop.isChecked():
-            cropreg = (self.spin_crop_min.value(), self.spin_crop_max.value())
+            cropreg=(self.spin_crop_min.value(), self.spin_crop_max.value())
             proclist.append(rp.preprocessing.misc.Cropper(region=cropreg))
         if self.checkbox_savgol.isChecked():
             window = self.spin_savgol_window.value()
@@ -1076,36 +895,36 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             proclist.append(rp.preprocessing.baseline.ASLS())
         if self.checkbox_norm.isChecked():
             norm_type = self.combo_norm_type.currentText()
-            if norm_type == "MinMax":
+            if norm_type=="MinMax":
                 proclist.append(rp.preprocessing.normalise.MinMax())
             elif norm_type == "Vector":
                 proclist.append(rp.preprocessing.normalise.Vector())
         self.preprocessing_pipeline = rp.preprocessing.Pipeline(proclist)
-        self.preprocessed_robj = self.preprocessing_pipeline.apply(robj)
+        self.preprocessed_robj=self.preprocessing_pipeline.apply(robj)
         self.log(f'Preproc robj specax: {self.preprocessed_robj.spectral_axis}')
         self.peaks = None
         self.btn_download_peaks.setEnabled(False)
         if self.checkbox_peaks.isChecked():
             prominence = self.spin_peaks_prominence.value()
-            width = int(self.spin_peaks_width.value())
+            width=int(self.spin_peaks_width.value())
             peaks, props = find_peaks(
                 self.preprocessed_robj.spectral_data[0],
                 prominence=prominence,
                 width=width
             )
             self.peaks = peaks
-            self.peakshifts = self.preprocessed_robj.spectral_axis[peaks]
+            self.peakshifts=self.preprocessed_robj.spectral_axis[peaks]
             self.log(f"Peaks found: {self.peaks}")
             self.btn_download_peaks.setEnabled(True)
         self.processed_spectrum = self.preprocessed_robj.spectral_data[0]
         self.current_spectrum_1 = self.processed_spectrum
-        self.spectral_axis = self.preprocessed_robj.spectral_axis
+        self.spectral_axis=self.preprocessed_robj.spectral_axis
         self.log(f"Preprocessed axis {self.spectral_axis}")
         self.log(f"Preprocessed spectrum {self.processed_spectrum}")
         self.log(f"Spectral data {self.preprocessed_robj.spectral_data}")
         self.log(f"{len(self.spectral_axis) == len(self.processed_spectrum)}")
-        if max(self.processed_spectrum) <= 1:
-            self.update_plot(self.spectral_axis, self.processed_spectrum * 100, zoom=True)
+        if max(self.processed_spectrum)<=1:
+            self.update_plot(self.spectral_axis, self.processed_spectrum*100, zoom=True)
         else:
             self.update_plot(self.spectral_axis, self.processed_spectrum, zoom=True)
         self.plot_widget.setTitle("Processed Spectrum")
@@ -1118,18 +937,18 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             progress.setMinimumDuration(0)
             progress.show()
             if self.checkbox_sad.isChecked():
-                method = 'sad'
+                method='sad'
             elif self.checkbox_sid.isChecked():
-                method = 'sid'
+                method='sid'
             elif self.checkbox_mae.isChecked():
-                method = 'mae'
+                method='mae'
             elif self.checkbox_mse.isChecked():
-                method = 'mse'
+                method='mse'
             elif self.checkbox_iur.isChecked():
-                method = 'iur'
+                method='iur'
             topn = self.spin_topn.value()
             self.log('Started search')
-            self.searchres = self.run_dbsearch_rbase(robj=self.preprocessed_robj, rbase_specdict=self.specdict, nleads=topn, metric=method, progress=progress)
+            self.searchres=self.run_dbsearch_rbase(robj=self.preprocessed_robj, rbase_specdict=self.specdict, nleads=topn, metric=method, progress=progress)
             self.log('Search results ready')
             if self.searchres.empty:
                 self.log('Search canceled or no results')
@@ -1142,82 +961,27 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             self.btn_download.setEnabled(True)
         self.btn_download_procspectrum.setEnabled(True)
         self.btn_revert.setEnabled(True)
-    # def plot_reference(self, index):
-    #     if index == 0: # "None"
-    #         self.plot_curve_ref.clear()
-    #         self.plot_curve_ref.setVisible(False)
-    #         return
-    #     if self.searchres is None:
-    #         return
-    #     selected_name = self.combo_reference.currentText()
-    #     matching_rows = self.searchres[self.searchres['component'] == selected_name]
-    #     if matching_rows.empty:
-    #         self.log(f"No data for {selected_name}")
-    #         return
-    #     row = matching_rows.iloc[0]
-    #     rbid = row['id']
-    #     rspec_data = row['aligned_intensity_comp']
-    #     rspec_axis = row['spectral_axis_comp']
-    #     if np.max(rspec_data) <= 1 and np.max(self.current_spectrum_1) <= 1:
-    #         rspec_data *= 100
-    #     self.plot_curve_ref.setData(rspec_axis, rspec_data)
-    #     self.plot_curve_ref.setVisible(True)
-    # def plot_reference(self, index):
-    #     if index == 0:  # "None"
-    #         self.plot_curve_ref.clear()
-    #         self.plot_curve_ref.setVisible(False)
-    #         self.plot_widget.setTitle("")  # убираем лишний заголовок
-    #         return
-
-    #     selected_name = self.combo_reference.currentText()
-        
-    #     # Проверяем, есть ли такой спектр в базе
-    #     if selected_name in self.specdict:
-    #         rspec = self.specdict[selected_name]['spectrum']
-    #         axis = rspec.spectral_axis
-    #         data = rspec.spectral_data.copy()
-            
-    #         if np.max(data) <= 1 and np.max(self.current_spectrum_1) <= 1:
-    #             data *= 100
-            
-    #         self.plot_curve_ref.setData(axis, data)
-    #         self.plot_curve_ref.setVisible(True)
-            
-    #         # Улучшаем отображение: подстраиваем масштаб под оба спектра
-    #         self.plot_widget.setXRange(min(np.min(axis), np.min(self.spectral_axis)),
-    #                                 max(np.max(axis), np.max(self.spectral_axis)))
-            
-    #         max_y = max(np.max(self.current_spectrum_1), np.max(data)) * 1.05
-    #         self.plot_widget.setYRange(0, max_y)
-            
-    #         self.plot_widget.setTitle(f"Reference: {selected_name}")
-    #         self.log(f"Plotted reference spectrum: {selected_name}")
-    #     else:
-    #         self.log(f"Спектр '{selected_name}' не найден в базе")
 
     def plot_reference(self, index):
-        if index == 0:
+        if index == 0: # "None"
             self.plot_curve_ref.clear()
             self.plot_curve_ref.setVisible(False)
             return
-
-        selected_display = self.combo_reference.currentText()
-
-        # Ищем по полю 'name'
-        for key, data in self.specdict.items():
-            if data.get('name', f"Спектр {key}") == selected_display:
-                rspec = data['spectrum']
-                axis = rspec.spectral_axis
-                intensity = rspec.spectral_data.copy()
-
-                if np.max(intensity) <= 1 and np.max(self.current_spectrum_1) <= 1:
-                    intensity *= 100
-
-                self.plot_curve_ref.setData(axis, intensity)
-                self.plot_curve_ref.setVisible(True)
-                return
-
-        self.log(f"Не найден спектр '{selected_display}'")
+        if self.searchres is None:
+            return
+        selected_name = self.combo_reference.currentText()
+        matching_rows = self.searchres[self.searchres['component'] == selected_name]
+        if matching_rows.empty:
+            self.log(f"No data for {selected_name}")
+            return
+        row = matching_rows.iloc[0]
+        rbid = row['id']
+        rspec_data=row['aligned_intensity_comp']
+        rspec_axis=row['spectral_axis_comp']
+        if np.max(rspec_data) <= 1 and np.max(self.current_spectrum_1) <= 1:
+             rspec_data *= 100
+        self.plot_curve_ref.setData(rspec_axis, rspec_data)
+        self.plot_curve_ref.setVisible(True)
 
     def revert_processing(self):
         if self.original_spectrum is not None:
@@ -1226,8 +990,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             self.peaks = None
             self.btn_download_peaks.setEnabled(False)
             if not self.cur_spectrum_is_db:
-                self.spectral_axis = self.get_current_axis()
-                self.update_plot(self.spectral_axis, self.current_spectrum_1)
+                self.update_plot(self.wavelengths, self.current_spectrum_1)
                 self.plot_widget.setTitle("")
                 for line in self.peak_lines:
                     self.plot_widget.removeItem(line)
@@ -1241,7 +1004,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                 self.update_plot(self.rspec.spectral_axis, self.current_spectrum_1)
                 self.plot_widget.setTitle("DB Spectrum")
                 self.plot_widget.setLabel('bottom', 'Raman shift (cm<sup>-1</sup>)')
-                self.cur_spectrum_is_db = True
+                self.cur_spectrum_is_db=True
             self.plot_curve_ref.clear()
             self.plot_curve_ref.setVisible(False)
             self.combo_reference.setCurrentIndex(0)
@@ -1249,35 +1012,40 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             self.btn_revert.setEnabled(False)
             self.btn_download.setEnabled(False)
             self.btn_download_procspectrum.setEnabled(False)
+
     def download_peaks(self):
         if self.peaks is None or self.processed_spectrum is None:
             self.log("No peak data present")
             return
         file_name, _ = QtWidgets.QFileDialog.getSaveFileName(self, 'Save Peaks', '', 'CSV Files (*.csv)')
         if file_name:
-            data = pd.DataFrame.from_dict({'Raman Shifts': self.peakshifts,
-                                           'Intensities': self.preprocessed_robj.spectral_data[0][np.where(np.isin(self.preprocessed_robj.spectral_axis, self.peakshifts))]})
+            data=pd.DataFrame.from_dict({'Raman Shifts':self.peakshifts,
+                                         'Intensities':self.preprocessed_robj.spectral_data[0][np.where(np.isin(self.preprocessed_robj.spectral_axis, self.peakshifts))]})
             data.to_csv(file_name, index=False)
             return
+
     def download_processing_results(self):
         file_name, _ = QtWidgets.QFileDialog.getSaveFileName(self, 'Save Results', '', 'CSV Files (*.csv)')
-        data = pd.DataFrame.from_dict({'Raman Shifts': self.preprocessed_robj.spectral_axis,
-                                       'Intensities': self.preprocessed_robj.spectral_data[0]})
+        data=pd.DataFrame.from_dict({'Raman Shifts':self.preprocessed_robj.spectral_axis,
+                                         'Intensities':self.preprocessed_robj.spectral_data[0]})
         data.to_csv(file_name, index=False)
         return
+
     def download_search_results(self):
         file_name, _ = QtWidgets.QFileDialog.getSaveFileName(self, 'Save Results', '', 'CSV Files (*.csv)')
-        self.searchres_fmt = copy.deepcopy(self.searchres)
-        self.searchres_fmt['aligned_intensity_comp'] = '; '.join(self.searchres_fmt['aligned_intensity_comp'].astype(str))
-        self.searchres_fmt['spectral_axis_comp'] = '; '.join(self.searchres_fmt['spectral_axis_comp'].astype(str))
+        self.searchres_fmt=copy.deepcopy(self.searchres)
+        self.searchres_fmt['aligned_intensity_comp']='; '.join(self.searchres_fmt['aligned_intensity_comp'].astype(str))
+        self.searchres_fmt['spectral_axis_comp']='; '.join(self.searchres_fmt['spectral_axis_comp'].astype(str))
         self.searchres.to_csv(file_name, index=False)
         return
+
     def set_hardware_average(self, count):
         if not self.serial_port.is_open:
             return
         count = max(1, min(255, int(count)))
         self.send_command_with_data(0x0c, count, 0x00) # 0x0c = set average times
         self.log(f"Hardware average set to {count}")
+
     def save_data(self):
         file_name, _ = QtWidgets.QFileDialog.getSaveFileName(self, 'Save Data', '', 'CSV Files (*.csv)')
         if file_name:
@@ -1286,6 +1054,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                 data = np.column_stack((x, y1))
                 header = 'x,Intensity'
                 np.savetxt(file_name, data, delimiter=',', header=header, comments='')
+
     def update_fps(self):
         self.frame_count += 1
         elapsed = time.time() - self.start_time
@@ -1294,36 +1063,42 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             self.fps_label.setText(f"FPS: {int(fps)}")
             self.frame_count = 0
             self.start_time = time.time()
+
     def on_zoom_checkbox_changed(self):
         if self.current_spectrum_1 is not None:
-            x = self.spectral_axis
+            x = self.wavelengths if self.processed_spectrum is None and not self.cur_spectrum_is_db else self.spectral_axis
             self.update_plot(x, self.current_spectrum_1)
+
     def log(self, message):
         timestamp = time.strftime("%H:%M:%S")
         self.log_widget.appendPlainText(f"[{timestamp}] {message}")
+
     def acquire_background(self):
-        if not self.serial_port.is_open:
-            QtWidgets.QMessageBox.warning(self, "Error", "Port is not opened!")
-            return
-        self.progress_bar.setRange(0, 0)
-        self.progress_bar.show()
-        QtWidgets.QApplication.processEvents()
-        try:
-            self.send_command(0x01)
-            data = self.read_spectral_data().astype(np.float64)
-          
-            if len(data) == 2048:
-                self.background_spectrum = data.copy()
-                self.log("Background is acquired")
-            else:
-                self.log("Background acquisition failed")
-        finally:
-            self.progress_bar.hide()
+            if not self.serial_port.is_open:
+                QtWidgets.QMessageBox.warning(self, "Error", "Port is not opened!")
+                return
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.show()
+            QtWidgets.QApplication.processEvents()
+            try:
+                self.send_command(0x01)
+                data = self.read_spectral_data().astype(np.float64)
+               
+                if len(data) == 2048:
+                    self.background_spectrum = data.copy()
+                    self.log("Background is acquired")
+                else:
+                    self.log("Background acquisition failed")
+            finally:
+                self.progress_bar.hide()
+
     def clear_background(self):
         self.background_spectrum = None
         self.log("Background cleared")
+
     def clear_log(self):
         self.log_widget.clear()
+
     def run_dbsearch_rbase(self, robj, rbase_specdict, nleads=10, metric='sad', progress=None):
         results = []
         ind = 0
@@ -1344,7 +1119,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                 if self.checkbox_process_db.isChecked():
                     rspec = self.preprocessing_pipeline.apply(rspec)
                 olap = min(robj.spectral_axis.max(), rspec.spectral_axis.max()) - max(robj.spectral_axis.min(), rspec.spectral_axis.min())
-                if olap > self.spin_min_olap.value():
+                if olap>self.spin_min_olap.value():
                     common_axis = np.linspace(
                         max(robj.spectral_axis.min(), rspec.spectral_axis.min()),
                         min(robj.spectral_axis.max(), rspec.spectral_axis.max()),
@@ -1382,7 +1157,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                         width_samples_q = self.spin_peaks_width.value() / delta if delta > 0 else 1.0
                         width_samples_db = self.spin_iur_width.value() / delta if delta > 0 else 1.0
                         peaks_q_idx = find_peaks(q, prominence=self.spin_peaks_prominence.value(), width=width_samples_q)[0]
-                        peaks_r_idx = find_peaks(r, prominence=self.spin_iur_prominence.value(), width=width_samples_db)[0]
+                        peaks_r_idx = find_peaks(r, prominence=self.spin_iur_prominence.value(), width= width_samples_db)[0]
                         peaks_q_pos = common_axis[peaks_q_idx]
                         peaks_r_pos = common_axis[peaks_r_idx]
                         len_q = len(peaks_q_pos)
@@ -1401,14 +1176,14 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                                 else:
                                     j_p += 1
                             total = len_q + len_r
-                            iou = matched / (total - matched) if (total - matched) != 0 else 0
-                            if matched < 1.0:
-                                iou = 0.0
-                                s = 1.0
+                            iou = matched / (total - matched)
+                            if matched<1.0:
+                                iou=0.0
+                                s=1.0
                             else:
                                 s = 1.0 - iou # Convert to distance (lower better)
                     sres.append({'component': name, 'url': url, 'id': rbid, 'identifier': ident, 'distance_score': s, 'source': 'rbase', 'aligned_intensity_comp': aligned_intensity2,
-                                 'spectral_axis_comp': common_axis})
+                                'spectral_axis_comp': common_axis})
                 i += 1
                 if i % 10 == 0:
                     QtWidgets.QApplication.processEvents()
@@ -1424,6 +1199,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         sdf = pd.DataFrame(sres).sort_values('distance_score', ascending=True)[:nleads].reset_index(drop=True)
         sdf['metric'] = metric
         return sdf
+
     def plot_db_spectrum(self):
         if self.specdict is None:
             self.log("No database loaded")
@@ -1449,8 +1225,8 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         name, rspec = matches[0]
         axis = rspec.spectral_axis
         data = rspec.spectral_data.copy()
-        self.rspec = rspec
-        self.rspec_name = name
+        self.rspec=rspec
+        self.rspec_name=name
         if np.max(data) <= 1:
             data *= 100
         self.plot_curve_ref.setData(axis, data)
@@ -1461,15 +1237,17 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         self.plot_widget.setYRange(min_y, max_y)
         self.plot_widget.setXRange(np.min(axis), np.max(axis))
         self.log(f"DB spectrum: {name}")
+
     def set_laser_voltage(self):
-        if not self.serial_port.is_open:
-            self.log("Port is not opened")
-            return
-        mV = self.spin_laser_voltage.value()
-        hi = (mV >> 8) & 0xFF
-        lo = mV & 0xFF
-        self.send_command_with_data(0x0D, hi, lo)
-        self.log(f"Analog output (laser voltage) → {mV} mV")
+            if not self.serial_port.is_open:
+                self.log("Port is not opened")
+                return
+            mV = self.spin_laser_voltage.value()
+            hi = (mV >> 8) & 0xFF
+            lo = mV & 0xFF
+            self.send_command_with_data(0x0D, hi, lo)
+            self.log(f"Analog output (laser voltage) → {mV} mV")
+
     def set_trigger_out(self, state):
         if not self.serial_port.is_open:
             self.log("Port is not opened")
@@ -1477,12 +1255,14 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         value = 1 if state == QtCore.Qt.Checked else 0
         self.send_command_with_data(0x10, value, 0x00)
         self.log(f"Trigger Out → {'HIGH (5V)' if value else 'LOW (0V)'}")
+
     def set_gain(self):
-        if not self.serial_port.is_open:
-            return
-        gain = self.spin_gain.value()
-        self.send_command_with_data(0x04, gain, 0x00)
-        self.log(f"Gain is set → {gain}")
+            if not self.serial_port.is_open:
+                return
+            gain = self.spin_gain.value()
+            self.send_command_with_data(0x04, gain, 0x00)
+            self.log(f"Gain is set → {gain}")
+
     def set_offset(self):
         if not self.serial_port.is_open:
             return
@@ -1491,13 +1271,15 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         sign = 0x01 if offset >= 0 else 0x00
         self.send_command_with_data(0x05, data, sign)
         self.log(f"Offset is set → {offset} (data={data}, sign={sign})")
+
     def read_gain(self):
-        self.send_command_with_data(0x23, 0x00, 0x00) # запрос
-        reply = self.read_reply(0x23, timeout=1.0)
-        if reply and len(reply) >= 3:
-            gain = reply[2]
-            self.spin_gain.setValue(gain)
-            self.log(f"Current gain = {gain}")
+            self.send_command_with_data(0x23, 0x00, 0x00) # запрос
+            reply = self.read_reply(0x23, timeout=1.0)
+            if reply and len(reply) >= 3:
+                gain = reply[2]
+                self.spin_gain.setValue(gain)
+                self.log(f"Current gain = {gain}")
+
     def read_offset(self):
         self.send_command_with_data(0x24, 0x00, 0x00)
         reply = self.read_reply(0x24, timeout=1.0)
@@ -1507,34 +1289,35 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             offset = data if sign == 0x01 else -data
             self.spin_offset.setValue(offset)
             self.log(f"Current offset = {offset}")
+
     def add_current_to_db(self):
-        if self.current_spectrum_1 is None:
-            self.log("No spectrum to add")
-            return
-        if self.specdict is None:
-            self.specdict = {}
-        name, ok = QtWidgets.QInputDialog.getText(self, "Spectrum name",
-                                                "Enter name:")
-        if not ok or not name.strip():
-            return
-        name = name.strip()
-        if name in self.specdict:
-            reply = QtWidgets.QMessageBox.question(self, "Replace?",
-                f"Spectrum '{name}' already exists. Replace?",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-            if reply == QtWidgets.QMessageBox.No:
+            if self.current_spectrum_1 is None:
+                self.log("No spectrum to add")
                 return
-        axis = self.spectral_axis
-        intensity = self.current_spectrum_1.copy()
-        rspec = rp.Spectrum(intensity, axis)
-        self.specdict[name] = {
-            'name': name,
-            'spectrum': rspec,
-            'url': '',
-            'identifier': name,
-        }
-        self.update_reference_combo_all()
-        self.log(f"Spectrum '{name}' is added to the base (total n: {len(self.specdict)})")
+            if self.specdict is None:
+                self.specdict = {}
+            name, ok = QtWidgets.QInputDialog.getText(self, "Spectrum name",
+                                                    "Enter name:")
+            if not ok or not name.strip():
+                return
+            name = name.strip()
+            if name in self.specdict:
+                reply = QtWidgets.QMessageBox.question(self, "Replace?",
+                    f"Spectrum '{name}' already exists. Replace?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+                if reply == QtWidgets.QMessageBox.No:
+                    return
+            axis = self.spectral_axis if self.spectral_axis is not None else self.wavelengths
+            intensity = self.current_spectrum_1.copy()
+            rspec = rp.Spectrum(intensity, axis)
+            self.specdict[name] = {
+                'name': name,
+                'spectrum': rspec,
+                'url': '',
+                'identifier': name,
+            }
+            self.log(f"Spectrum '{name}' is added to the base (total n: {len(self.specdict)})")
+
     def remove_from_db(self):
         if self.specdict is None or not self.specdict:
             self.log("The base is empty")
@@ -1546,7 +1329,6 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             del self.specdict[name]
             self.log(f"Spectrum '{name}' is removed. Remaining: {len(self.specdict)}")
 
-        self.update_reference_combo_all()
     def save_db_as(self):
         if self.specdict is None:
             self.log("Base is not loaded")
@@ -1560,6 +1342,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                 self.log(f"Base is saved: {file_name}")
             except Exception as e:
                 self.log(f"Error saving base: {e}")
+
     def create_new_empty_db(self):
         reply = QtWidgets.QMessageBox.question(self, "Create empty base?",
             "Current base will be replaced with an empty base. Continue?",
@@ -1568,7 +1351,6 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             self.specdict = {}
             self.log("New spectra base is created")
 
-        self.update_reference_combo_all()
     def load_database_file(self):
         file_name, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
@@ -1581,7 +1363,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         try:
             with open(file_name, "rb") as f:
                 loaded_dict = pickle.load(f)
-          
+           
             if not isinstance(loaded_dict, dict):
                 raise ValueError("Loaded file does not contain a dictionary")
             self.specdict = loaded_dict
@@ -1592,10 +1374,10 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             self.log(f"Database loaded successfully: {file_name} ({len(self.specdict)} entries)")
             self.lbl_current_db.setText(f"DB: {os.path.basename(file_name)}")
             self.lbl_current_db.setStyleSheet("color: green;")
-            self.update_reference_combo_all()
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Load Error", f"Failed to load database:\n{str(e)}")
             self.log(f"Database load failed: {e}")
+
     def reload_current_database(self):
         if not self.current_db_path or not os.path.exists(self.current_db_path):
             QtWidgets.QMessageBox.information(self, "No Current DB",
@@ -1604,17 +1386,17 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         try:
             with open(self.current_db_path, "rb") as f:
                 self.specdict = pickle.load(f)
-          
+           
             self.searchres = None
             self.combo_reference.clear()
             self.combo_reference.addItem("None")
             self.log(f"Reloaded current database: {self.current_db_path} ({len(self.specdict)} entries)")
             self.lbl_current_db.setText(f"DB: {os.path.basename(self.current_db_path)}")
             self.lbl_current_db.setStyleSheet("color: green;")
-            self.update_reference_combo_all()
         except Exception as e:
             self.log(f"Failed to reload database: {e}")
             QtWidgets.QMessageBox.warning(self, "Reload Error", str(e))
+
     def save_as_default_database(self):
         if self.specdict is None or len(self.specdict) == 0:
             self.log("No database loaded or database is empty — nothing to save as default")
@@ -1634,15 +1416,16 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         try:
             with open(default_path, "wb") as f:
                 pickle.dump(self.specdict, f)
-          
+           
             self.current_db_path = default_path
-          
+           
             self.log(f"Successfully saved current database as default: {default_path} ({len(self.specdict)} entries)")
             self.lbl_current_db.setText(f"DB: {os.path.basename(default_path)} (default)")
             self.lbl_current_db.setStyleSheet("color: green;")
         except Exception as e:
             self.log(f"Failed to save as default database: {e}")
             QtWidgets.QMessageBox.critical(self, "Save Error", f"Could not save default database:\n{str(e)}")
+
     def read_calibration_group(self, group: int):
         if not self.serial_port.is_open:
             self.log("Port not open")
@@ -1676,10 +1459,12 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         else:
             self.log(f"Failed to parse coefficients for group {group}")
             return None
+
     def read_all_calibration(self):
         for g in [1,2,3]:
             self.read_calibration_group(g)
         self.log("Calibration coefficients read complete")
+
     def write_calibration_group(self, group: int):
         if not self.serial_port.is_open:
             return
@@ -1701,51 +1486,809 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         self.serial_port.write(full_packet)
         self.log(f"Wrote calibration group {group} ({self.calib_group_names[group]}) → device")
         time.sleep(0.3) # give device time
+
     def write_selected_calibration(self):
         idx = self.calib_tabs.currentIndex()
-        if idx < 3:
-            group = idx + 1 # tabs 0,1,2 → groups 1,2,3
-            self.write_calibration_group(group)
+        group = idx + 1 # tabs 0,1,2 → groups 1,2,3
+        self.write_calibration_group(group)
         self.log("Write complete. Remember to SAVE to flash if needed.")
+
     def save_parameters_to_flash(self):
         self.save_parameters() # your existing method (0x22)
         self.log("Calibration changes saved to non-volatile memory")
+
     def preview_calibration_axis(self):
         idx = self.calib_tabs.currentIndex()
-        if idx < 3:
-            group = idx + 1
-            f0, f1, f2, f3 = [self.calib_coeffs[group][i].value() for i in range(4)]
-            pixels = np.arange(2048)
-            if abs(f0) < 1e-12 and abs(f1) < 1e-9:
-                axis = f2 * pixels + f3
-            else:
-                axis = f0 * pixels**3 + f1 * pixels**2 + f2 * pixels + f3
-            minv, maxv = np.min(axis), np.max(axis)
-            self.log(f"Preview group {group}: {minv:.2f} → {maxv:.2f} (mean step ≈ {(maxv-minv)/2047:.4f})")
-            reply = QtWidgets.QMessageBox.question(self, "Preview",
-                f"Group {group}: {minv:.2f} – {maxv:.2f}\nPlot preview axis?",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-            if reply == QtWidgets.QMessageBox.Yes:
-                self.plot_curve_ref.setData(pixels, axis)
-                self.plot_curve_ref.setVisible(True)
-                self.plot_widget.setLabel('bottom', 'Pixel')
-                self.plot_widget.setLabel('left', self.calib_group_names[group])
+        group = idx + 1
+        f0, f1, f2, f3 = [self.calib_coeffs[group][i].value() for i in range(4)]
+        pixels = np.arange(2048)
+        if abs(f0) < 1e-12 and abs(f1) < 1e-9:
+            axis = f2 * pixels + f3
+        else:
+            axis = f0 * pixels**3 + f1 * pixels**2 + f2 * pixels + f3
+        minv, maxv = np.min(axis), np.max(axis)
+        self.log(f"Preview group {group}: {minv:.2f} → {maxv:.2f} (mean step ≈ {(maxv-minv)/2047:.4f})")
+        reply = QtWidgets.QMessageBox.question(self, "Preview",
+            f"Group {group}: {minv:.2f} – {maxv:.2f}\nPlot preview axis?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+        if reply == QtWidgets.QMessageBox.Yes:
+            self.plot_curve_ref.setData(pixels, axis)
+            self.plot_curve_ref.setVisible(True)
+            self.plot_widget.setLabel('bottom', 'Pixel')
+            self.plot_widget.setLabel('left', self.calib_group_names[group])
+#HERE - STAGE CONTROL CODE
 
-    def read_smoothing_level(self):
-            if not self.serial_port.is_open:
-                return
-            self.send_command(0x25)  # get command (according to protocol)
-            reply = self.read_reply(0x25, timeout=1.0)
-            if reply and len(reply) >= 3:
-                level = reply[2]
-                if 1 <= level <= 10:
-                    self.smoothing_level = level
-                    self.spin_smooth.setValue(level)
-                    self.log(f"Read smoothing level from device: {level}")
-                else:
-                    self.log(f"Invalid smoothing level read: {level}")
+
+    # =================================================================
+    #  MOTORIZED STAGE CONTROL
+    # =================================================================
+
+    def create_stage_panel(self):
+        self.stage_dock = QtWidgets.QDockWidget("Motorized Stage Control", self)
+        self.stage_dock.setAllowedAreas(
+            QtCore.Qt.RightDockWidgetArea | QtCore.Qt.LeftDockWidgetArea
+        )
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, self.stage_dock)
+        self.stage_dock.setVisible(False)
+        self.stage_dock.setMinimumWidth(580)
+        self.stage_dock.setMaximumWidth(700)
+
+
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QtWidgets.QWidget()
+        main_layout = QtWidgets.QVBoxLayout(container)
+        main_layout.setSpacing(3)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+
+        # ---- Connection ----
+        conn_group = QtWidgets.QGroupBox("Stage Connection")
+        conn_lay = QtWidgets.QHBoxLayout()
+        conn_lay.setSpacing(2)
+        self.stage_combo_ports = QtWidgets.QComboBox()
+        conn_lay.addWidget(self.stage_combo_ports)
+        btn_ref = QtWidgets.QPushButton("Refresh")
+        btn_ref.clicked.connect(self.stage_refresh_ports)
+        conn_lay.addWidget(btn_ref)
+        self.stage_combo_baud = QtWidgets.QComboBox()
+        self.stage_combo_baud.addItems(["9600", "19200", "38400", "115200"])
+        self.stage_combo_baud.setCurrentText("9600")
+        conn_lay.addWidget(self.stage_combo_baud)
+        btn_conn = QtWidgets.QPushButton("Connect")
+        btn_conn.clicked.connect(self.stage_connect)
+        conn_lay.addWidget(btn_conn)
+        btn_disc = QtWidgets.QPushButton("Disconnect")
+        btn_disc.clicked.connect(self.stage_disconnect)
+        conn_lay.addWidget(btn_disc)
+        self.stage_status_label = QtWidgets.QLabel("● Disconnected")
+        self.stage_status_label.setStyleSheet("color: red; font-weight: bold;")
+        conn_lay.addWidget(self.stage_status_label)
+        conn_group.setLayout(conn_lay)
+        main_layout.addWidget(conn_group)
+
+        # ---- Settings ----
+        settings_group = QtWidgets.QGroupBox("Stage Settings")
+        settings_lay = QtWidgets.QFormLayout()
+        settings_lay.setSpacing(2)
+        self.spin_stage_speed_x = QtWidgets.QSpinBox()
+        self.spin_stage_speed_x.setRange(1, 300)
+        self.spin_stage_speed_x.setValue(60)
+        settings_lay.addRow("Speed X (rpm):", self.spin_stage_speed_x)
+        self.spin_stage_speed_y = QtWidgets.QSpinBox()
+        self.spin_stage_speed_y.setRange(1, 300)
+        self.spin_stage_speed_y.setValue(100)
+        settings_lay.addRow("Speed Y (rpm):", self.spin_stage_speed_y)
+        self.spin_stage_step_size = QtWidgets.QSpinBox()
+        self.spin_stage_step_size.setRange(1, 5000)
+        self.spin_stage_step_size.setValue(150)
+        settings_lay.addRow("Step size (steps):", self.spin_stage_step_size)
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_apply_s = QtWidgets.QPushButton("Apply Settings")
+        btn_apply_s.clicked.connect(self.stage_apply_settings)
+        btn_row.addWidget(btn_apply_s)
+        btn_status = QtWidgets.QPushButton("Get Status")
+        btn_status.clicked.connect(self.stage_get_status)
+        btn_row.addWidget(btn_status)
+        settings_lay.addRow(btn_row)
+        settings_group.setLayout(settings_lay)
+        main_layout.addWidget(settings_group)
+
+        # ---- Manual Jog (mirrored: X+ = left, X- = right, Y+ = down, Y- = up) ----
+        jog_group = QtWidgets.QGroupBox("Manual Jog (hardware-matched)")
+        jog_lay = QtWidgets.QGridLayout()
+        jog_lay.setSpacing(2)
+
+        btn_yup = QtWidgets.QPushButton("▲ Up (Y−)")
+        btn_yup.setMinimumHeight(36)
+        btn_yup.clicked.connect(lambda: self.stage_jog("MOVE_Y_NEG"))
+        jog_lay.addWidget(btn_yup, 0, 1)
+
+        btn_xleft = QtWidgets.QPushButton("◀ Left (X+)")
+        btn_xleft.setMinimumHeight(36)
+        btn_xleft.clicked.connect(lambda: self.stage_jog("MOVE_X_POS"))
+        jog_lay.addWidget(btn_xleft, 1, 0)
+
+        btn_stp = QtWidgets.QPushButton("■ STOP")
+        btn_stp.setMinimumHeight(36)
+        btn_stp.setStyleSheet(
+            "background-color: #ff4444; color: white; font-weight: bold;"
+        )
+        btn_stp.clicked.connect(lambda: self.stage_jog("STOP"))
+        jog_lay.addWidget(btn_stp, 1, 1)
+
+        btn_xright = QtWidgets.QPushButton("Right (X−) ▶")
+        btn_xright.setMinimumHeight(36)
+        btn_xright.clicked.connect(lambda: self.stage_jog("MOVE_X_NEG"))
+        jog_lay.addWidget(btn_xright, 1, 2)
+
+        btn_ydown = QtWidgets.QPushButton("▼ Down (Y+)")
+        btn_ydown.setMinimumHeight(36)
+        btn_ydown.clicked.connect(lambda: self.stage_jog("MOVE_Y_POS"))
+        jog_lay.addWidget(btn_ydown, 2, 1)
+
+        jog_group.setLayout(jog_lay)
+        main_layout.addWidget(jog_group)
+
+        # ---- Motion Program ----
+        motion_group = QtWidgets.QGroupBox("Motion Program (move only)")
+        motion_lay = QtWidgets.QVBoxLayout()
+        motion_lay.setSpacing(2)
+        motion_lay.addWidget(QtWidgets.QLabel(
+            "Syntax: xspeed60yspeed70pause500_3strokesxneg2strokesypos_home"
+        ))
+        self.stage_motion_edit = QtWidgets.QPlainTextEdit()
+        self.stage_motion_edit.setMaximumHeight(45)
+        self.stage_motion_edit.setPlaceholderText(
+            "xspeed60yspeed70pause500_3strokesxneg2strokesypos_home"
+        )
+        motion_lay.addWidget(self.stage_motion_edit)
+        btn_run_m = QtWidgets.QPushButton("▶ Run Motion Program")
+        btn_run_m.clicked.connect(self.stage_run_motion_program)
+        motion_lay.addWidget(btn_run_m)
+        motion_group.setLayout(motion_lay)
+        main_layout.addWidget(motion_group)
+
+        # ---- Scan Program ----
+        scan_group = QtWidgets.QGroupBox("Scan Program (motion + acquisition)")
+        scan_lay = QtWidgets.QVBoxLayout()
+        scan_lay.setSpacing(2)
+        scan_lay.addWidget(QtWidgets.QLabel(
+            "Syntax: xspeed60yspeed70pause500inttime100v3000\n"
+            "_3strokesxneg2strokesypos_runnametest_autodarktrue_home"
+        ))
+        self.stage_scan_edit = QtWidgets.QPlainTextEdit()
+        self.stage_scan_edit.setMaximumHeight(50)
+        self.stage_scan_edit.setPlaceholderText(
+            "xspeed60yspeed70pause500inttime100v3000"
+            "_3strokesxneg2strokesypos_runnametest01_autodarktrue_home"
+        )
+        scan_lay.addWidget(self.stage_scan_edit)
+        btn_run_s = QtWidgets.QPushButton("▶ Run Scan Program")
+        btn_run_s.setStyleSheet(
+            "background-color: #44bb44; color: white; font-weight: bold;"
+        )
+        btn_run_s.clicked.connect(self.stage_run_scan_program)
+        scan_lay.addWidget(btn_run_s)
+        scan_lay.addWidget(QtWidgets.QLabel("Progress:"))
+        self.stage_scan_progress = QtWidgets.QProgressBar()
+        self.stage_scan_progress.setValue(0)
+        scan_lay.addWidget(self.stage_scan_progress)
+        scan_group.setLayout(scan_lay)
+        main_layout.addWidget(scan_group)
+
+        # ---- Abort ----
+        btn_abort = QtWidgets.QPushButton("⛔ ABORT ALL")
+        btn_abort.setStyleSheet(
+            "background-color: #cc0000; color: white;"
+            " font-weight: bold; padding: 6px;"
+        )
+        btn_abort.clicked.connect(self.stage_abort)
+        main_layout.addWidget(btn_abort)
+
+        # ---- Stage Log ----
+        self.stage_log_widget = QtWidgets.QPlainTextEdit()
+        self.stage_log_widget.setReadOnly(True)
+        self.stage_log_widget.setMaximumHeight(100)
+        main_layout.addWidget(self.stage_log_widget)
+
+        main_layout.addStretch()
+        scroll.setWidget(container)
+        self.stage_dock.setWidget(scroll)
+
+    # ---- Stage logging ----
+
+    def stage_log(self, message):
+        ts = time.strftime("%H:%M:%S")
+        self.stage_log_widget.appendPlainText(f"[{ts}] {message}")
+        self.log(f"[STAGE] {message}")
+
+    # ---- Stage connection ----
+
+    def stage_refresh_ports(self):
+        self.stage_combo_ports.clear()
+        ports = serial.tools.list_ports.comports()
+        for p in ports:
+            self.stage_combo_ports.addItem(p.device)
+
+    def stage_connect(self):
+        if self.stage_serial is not None and self.stage_serial.is_open:
+            self.stage_log("Already connected")
+            return
+        port = self.stage_combo_ports.currentText()
+        baud = int(self.stage_combo_baud.currentText())
+        if not port:
+            QtWidgets.QMessageBox.warning(self, "Stage", "No port selected")
+            return
+        try:
+            self.stage_serial = serial.Serial(port, baud, timeout=2)
+            time.sleep(2)
+            if self.stage_serial.in_waiting:
+                startup = self.stage_serial.read(
+                    self.stage_serial.in_waiting
+                ).decode('ascii', errors='ignore')
+                self.stage_log(f"Startup: {startup.strip()}")
+            self.stage_serial.write(b"PING\n")
+            time.sleep(0.3)
+            resp = self._stage_read_line(timeout=2)
+            if resp and "PONG" in resp:
+                self.stage_status_label.setText("● Connected")
+                self.stage_status_label.setStyleSheet(
+                    "color: green; font-weight: bold;"
+                )
+                self.stage_log(f"Connected to {port} @ {baud}")
             else:
-                self.log("Could not read smoothing level from device")
+                self.stage_status_label.setText("● Connected (?)")
+                self.stage_status_label.setStyleSheet(
+                    "color: orange; font-weight: bold;"
+                )
+                self.stage_log(f"No PONG (got: '{resp}'), may still work")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Stage Error", str(e))
+            self.stage_log(f"Connection error: {e}")
+
+    def stage_disconnect(self):
+        if self.stage_serial is not None and self.stage_serial.is_open:
+            self.stage_serial.write(b"STOP\n")
+            time.sleep(0.1)
+            self.stage_serial.close()
+        self.stage_serial = None
+        self.stage_status_label.setText("● Disconnected")
+        self.stage_status_label.setStyleSheet("color: red; font-weight: bold;")
+        self.stage_log("Disconnected")
+
+    # ---- Stage serial helpers ----
+
+    def _stage_send(self, cmd):
+        if self.stage_serial is None or not self.stage_serial.is_open:
+            self.stage_log("Stage not connected!")
+            return None
+        self.stage_serial.reset_input_buffer()
+        self.stage_serial.write((cmd.strip() + "\n").encode('ascii'))
+        self.stage_log(f"TX: {cmd.strip()}")
+        resp = self._stage_read_line(timeout=15)
+        if resp:
+            self.stage_log(f"RX: {resp}")
+        return resp
+
+    def _stage_read_line(self, timeout=5):
+        if self.stage_serial is None or not self.stage_serial.is_open:
+            return None
+        start = time.time()
+        buf = ""
+        while time.time() - start < timeout:
+            if self.stage_serial.in_waiting:
+                ch = self.stage_serial.read(1).decode('ascii', errors='ignore')
+                if ch == '\n':
+                    return buf.strip()
+                if ch != '\r':
+                    buf += ch
+            else:
+                time.sleep(0.005)
+            QtWidgets.QApplication.processEvents()
+        return buf.strip() if buf.strip() else None
+
+    def _stage_wait_ok(self, timeout=15):
+        """Read lines until we get one starting with OK, or timeout."""
+        start = time.time()
+        while time.time() - start < timeout:
+            line = self._stage_read_line(timeout=timeout - (time.time() - start))
+            if line is None:
+                return None
+            self.stage_log(f"RX: {line}")
+            if line.startswith("OK"):
+                return line
+            if line.startswith("ERR"):
+                return line
+        return None
+
+    # ---- Stage settings / jog ----
+
+    def stage_apply_settings(self):
+        self._stage_send(f"SET_SPEED_X {self.spin_stage_speed_x.value()}")
+        self._stage_send(f"SET_SPEED_Y {self.spin_stage_speed_y.value()}")
+        self._stage_send(f"SET_STEP_SIZE {self.spin_stage_step_size.value()}")
+
+    def stage_get_status(self):
+        self._stage_send("GET_STATUS")
+
+    def stage_jog(self, direction):
+        self._stage_send(direction)
+
+    def stage_abort(self):
+        self._stage_abort_flag = True
+        if self.stage_serial is not None and self.stage_serial.is_open:
+            self.stage_serial.write(b"STOP\n")
+        self.stage_log("ABORT requested")
+
+    # ---- Program parser ----
+
+    def _parse_stage_program(self, text):
+        """
+        Parse program string into list of stroke commands + settings.
+        
+        New syntax with direction:
+          xspeed60yspeed70pause500_3strokesxneg2strokesypos
+          xspeed60yspeed70pause500inttime100v3000_3strokesxneg2strokesypos_runnametest_autodarktrue
+        
+        Each stroke block: <count>strokes<axis><direction>
+          axis: x or y
+          direction: pos or neg
+        
+        Strokes are executed in order as written.
+        """
+        import re
+        text = text.strip()
+        p = {}
+
+        m = re.search(r'xspeed(\d+)', text)
+        p['xspeed'] = int(m.group(1)) if m else 60
+
+        m = re.search(r'yspeed(\d+)', text)
+        p['yspeed'] = int(m.group(1)) if m else 100
+
+        m = re.search(r'pause(\d+)', text)
+        p['pause'] = int(m.group(1)) if m else 500
+
+        m = re.search(r'inttime(\d+)', text)
+        p['inttime'] = int(m.group(1)) if m else None
+
+        m = re.search(r'(?<![a-zA-Z])v(\d+)', text)
+        p['voltage'] = int(m.group(1)) if m else None
+
+        m = re.search(r'runname(\w+?)(?:_|$)', text)
+        p['runname'] = m.group(1) if m else 'default'
+
+        m = re.search(r'autodark(true|false)', text, re.IGNORECASE)
+        p['autodark'] = (m.group(1).lower() == 'true') if m else False
+
+
+        m = re.search(r'stepsize(\d+)', text)
+        p['stepsize'] = int(m.group(1)) if m else self.spin_stage_step_size.value()
+
+        # Parse stroke sequence: list of (count, axis, direction)
+        # e.g. "3strokesxneg" -> (3, 'x', 'neg')
+        # e.g. "2strokesypos" -> (2, 'y', 'pos')
+        stroke_pattern = re.compile(r'(\d+)strokes(x|y)(pos|neg)')
+        strokes = stroke_pattern.findall(text)
+        
+        if strokes:
+            p['stroke_sequence'] = [
+                (int(count), axis, direction)
+                for count, axis, direction in strokes
+            ]
+        else:
+            # Fallback: try old format without direction
+            # e.g. "3strokesx2strokesy" -> default pos
+            old_pattern = re.compile(r'(\d+)strokes(x|y)')
+            old_strokes = old_pattern.findall(text)
+            if old_strokes:
+                p['stroke_sequence'] = [
+                    (int(count), axis, 'pos')
+                    for count, axis in old_strokes
+                ]
+            else:
+                p['stroke_sequence'] = [(1, 'x', 'pos')]
+
+        # Check for _home flag
+        p['home'] = bool(re.search(r'_home\b', text, re.IGNORECASE))
+
+        return p
+
+    # ---- Non-blocking pause ----
+
+    def _stage_pause(self, ms):
+        start = time.time()
+        while (time.time() - start) * 1000 < ms:
+            if self._stage_abort_flag:
+                return
+            QtWidgets.QApplication.processEvents()
+            time.sleep(0.005)
+
+    # ---- Motion-only program ----
+
+    def stage_run_motion_program(self):
+        text = self.stage_motion_edit.toPlainText().strip()
+        if not text:
+            self.stage_log("No motion program entered")
+            return
+        if self.stage_serial is None or not self.stage_serial.is_open:
+            QtWidgets.QMessageBox.warning(self, "Stage", "Stage not connected!")
+            return
+
+        params = self._parse_stage_program(text)
+        self.stage_log(f"Motion params: {params}")
+        self._stage_abort_flag = False
+
+        self._stage_send(f"SET_SPEED_X {params['xspeed']}")
+        self._stage_send(f"SET_SPEED_Y {params['yspeed']}")
+        self._stage_send(f"SET_STEP_SIZE {params['stepsize']}")
+
+        stroke_seq = params['stroke_sequence']
+        pause_ms = params['pause']
+
+        # Calculate total steps
+        total = sum(count for count, axis, direction in stroke_seq)
+        self.stage_scan_progress.setRange(0, total)
+        self.stage_scan_progress.setValue(0)
+        step_num = 0
+
+        for count, axis, direction in stroke_seq:
+            if self._stage_abort_flag:
+                self.stage_log("Motion ABORTED")
+                return
+
+            cmd_map = {
+                ('x', 'pos'): "MOVE_X_POS",
+                ('x', 'neg'): "MOVE_X_NEG",
+                ('y', 'pos'): "MOVE_Y_POS",
+                ('y', 'neg'): "MOVE_Y_NEG",
+            }
+            cmd = cmd_map.get((axis, direction), "MOVE_X_POS")
+
+            self.stage_log(f"--- {count} strokes: {cmd} ---")
+
+            for i in range(count):
+                if self._stage_abort_flag:
+                    self.stage_log("Motion ABORTED")
+                    return
+                step_num += 1
+                self.stage_log(f"  Stroke {i+1}/{count} ({cmd})")
+                self.stage_scan_progress.setValue(step_num)
+                QtWidgets.QApplication.processEvents()
+
+                self._stage_send(cmd)
+                self._stage_pause(pause_ms)
+
+        self.stage_scan_progress.setValue(total)
+        self.stage_log("Motion program COMPLETE")
+
+        if params.get('home', False) and not self._stage_abort_flag:
+            self._stage_return_home_from_sequence(stroke_seq)
+
+
+    # ---- Dark spectrum with validation ----
+
+    def _acquire_valid_dark(self, max_attempts=5):
+        for attempt in range(1, max_attempts + 1):
+            self.stage_log(f"Dark attempt {attempt}/{max_attempts}")
+            self.send_command(0x01)
+            data = self.read_spectral_data().astype(np.float64)
+            if len(data) != 2048:
+                self.stage_log("  wrong length, retry")
+                time.sleep(0.2)
+                continue
+            if np.all(data == 0):
+                self.stage_log("  all zeros, retry")
+                time.sleep(0.2)
+                continue
+            if np.std(data) < 1.0:
+                self.stage_log("  flat signal, retry")
+                time.sleep(0.2)
+                continue
+            median_val = np.median(data)
+            if median_val > 0 and (np.max(data) / median_val) > 100:
+                self.stage_log("  extreme spike, retry")
+                time.sleep(0.2)
+                continue
+            self.stage_log(f"  valid dark (mean={np.mean(data):.1f})")
+            return data
+        self.stage_log("All dark attempts failed!")
+        return None
+
+    # ---- Single acquisition for scan ----
+
+    def _scan_acquire_valid(self, max_attempts=3):
+        for attempt in range(max_attempts):
+            self.send_command(0x01)
+            data = self.read_spectral_data().astype(np.float64)
+            if data is not None and len(data) == 2048 and not np.all(data == 0):
+                return data
+            self.stage_log(f"  Scan acq retry {attempt+1}")
+            time.sleep(0.1)
+        return None
+
+    # ---- Save screenshot ----
+
+    def _save_screenshot(self, filepath):
+        try:
+            screen = self.plot_widget.grab()
+            screen.save(filepath)
+            self.stage_log(f"Screenshot: {filepath}")
+        except Exception as e:
+            self.stage_log(f"Screenshot failed: {e}")
+
+    # ---- Scan program (motion + acquisition) ----
+
+    def stage_run_scan_program(self):
+        text = self.stage_scan_edit.toPlainText().strip()
+        if not text:
+            self.stage_log("No scan program entered")
+            return
+        if self.stage_serial is None or not self.stage_serial.is_open:
+            QtWidgets.QMessageBox.warning(self, "Stage", "Stage not connected!")
+            return
+        if not self.serial_port.is_open:
+            QtWidgets.QMessageBox.warning(
+                self, "Stage",
+                "Spectrometer not connected!\nOpen spectrometer port first."
+            )
+            return
+
+        params = self._parse_stage_program(text)
+        self.stage_log(f"Scan params: {params}")
+        self._stage_abort_flag = False
+
+        runname = params['runname']
+        autodark = params['autodark']
+        inttime = params['inttime']
+        voltage = params['voltage']
+        pause_ms = params['pause']
+        stroke_seq = params['stroke_sequence']
+
+        # Total number of individual steps (= acquisition points)
+        total = sum(count for count, axis, direction in stroke_seq)
+        # Plus 1 for the starting position
+        total_points = total + 1
+
+        if inttime is not None and inttime >= pause_ms:
+            QtWidgets.QMessageBox.warning(
+                self, "Stage",
+                f"inttime ({inttime}ms) must be < pause ({pause_ms}ms)!"
+            )
+            return
+
+        # Create output directory
+        run_dir = os.path.join(os.getcwd(), runname)
+        os.makedirs(run_dir, exist_ok=True)
+        self.stage_log(f"Output dir: {run_dir}")
+
+        # Save scan parameters
+        with open(os.path.join(run_dir, "scan_parameters.txt"), 'w') as f:
+            for k, v in params.items():
+                f.write(f"{k}={v}\n")
+            f.write(f"total_points={total_points}\n")
+            f.write(f"timestamp={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+        # Apply stage settings
+        self._stage_send(f"SET_SPEED_X {params['xspeed']}")
+        self._stage_send(f"SET_SPEED_Y {params['yspeed']}")
+        self._stage_send(f"SET_STEP_SIZE {params['stepsize']}")
+
+        # Set integration time
+        if inttime is not None:
+            self.spin_integration_time.setValue(inttime)
+            self.set_integration_time()
+            self.stage_log(f"Integration time -> {inttime} ms")
+
+        # Laser OFF initially
+        if voltage is not None:
+            self.spin_laser_voltage.setValue(0)
+            self.set_laser_voltage()
+            self.stage_log("Laser OFF for setup")
+            time.sleep(0.1)
+
+        # ---- Dark spectrum ----
+        dark_spectrum = None
+        if autodark:
+            self.stage_log("=== Auto-dark (laser OFF) ===")
+            dark_spectrum = self._acquire_valid_dark(max_attempts=5)
+            if dark_spectrum is not None:
+                np.savetxt(
+                    os.path.join(run_dir, "dark_spectrum.csv"),
+                    np.column_stack((self.wavelengths, dark_spectrum)),
+                    delimiter=',', header='wavelength,intensity', comments=''
+                )
+                self.background_spectrum = dark_spectrum.copy()
+                self.stage_log("Dark spectrum saved and set as background")
+            else:
+                self.stage_log("WARNING: Could not get valid dark!")
+        else:
+            if self.background_spectrum is not None:
+                dark_spectrum = self.background_spectrum.copy()
+                self.stage_log("Using existing background")
+            else:
+                self.stage_log("No background - raw data only")
+
+        # Laser ON
+        if voltage is not None:
+            self.spin_laser_voltage.setValue(voltage)
+            self.set_laser_voltage()
+            self.stage_log(f"Laser ON -> {voltage} mV")
+            time.sleep(0.3)
+
+        # ---- Helper: acquire and save at current position ----
+        def acquire_at_position(pos_name):
+            self.stage_log(f"  Acquiring at {pos_name}...")
+
+            settle_time = max(50, pause_ms - (inttime if inttime else 0))
+            self._stage_pause(settle_time)
+
+            if self._stage_abort_flag:
+                return False
+
+            raw_data = self._scan_acquire_valid(max_attempts=3)
+            if raw_data is None:
+                self.stage_log(f"  FAILED to acquire at {pos_name}")
+                return True  # continue scanning
+
+            # Save raw
+            np.savetxt(
+                os.path.join(run_dir, f"{pos_name}_raw.csv"),
+                np.column_stack((self.wavelengths, raw_data)),
+                delimiter=',', header='wavelength,raw_intensity', comments=''
+            )
+
+            # Save corrected
+            if dark_spectrum is not None:
+                corrected = raw_data - dark_spectrum
+                np.savetxt(
+                    os.path.join(run_dir, f"{pos_name}_corrected.csv"),
+                    np.column_stack((self.wavelengths, corrected)),
+                    delimiter=',', header='wavelength,corrected_intensity',
+                    comments=''
+                )
+                self.current_spectrum_1 = corrected.copy()
+                self.original_spectrum = corrected.copy()
+                self.update_plot(self.wavelengths, corrected)
+            else:
+                self.current_spectrum_1 = raw_data.copy()
+                self.original_spectrum = raw_data.copy()
+                self.update_plot(self.wavelengths, raw_data)
+
+            QtWidgets.QApplication.processEvents()
+            self._save_screenshot(
+                os.path.join(run_dir, f"{pos_name}_plot.png")
+            )
+            return True
+
+        # ---- Scan loop ----
+        self.stage_scan_progress.setRange(0, total_points)
+        self.stage_scan_progress.setValue(0)
+        point_num = 0
+        scan_aborted = False
+
+        cmd_map = {
+            ('x', 'pos'): "MOVE_X_POS",
+            ('x', 'neg'): "MOVE_X_NEG",
+            ('y', 'pos'): "MOVE_Y_POS",
+            ('y', 'neg'): "MOVE_Y_NEG",
+        }
+
+        # Acquire at starting position
+        point_num += 1
+        self.stage_log(f"=== Point {point_num}/{total_points}: start ===")
+        self.stage_scan_progress.setValue(point_num)
+        if not acquire_at_position("pt_0000_start"):
+            scan_aborted = True
+
+        # Execute stroke sequence
+        for count, axis, direction in stroke_seq:
+            if scan_aborted or self._stage_abort_flag:
+                scan_aborted = True
+                break
+
+            cmd = cmd_map.get((axis, direction), "MOVE_X_POS")
+            self.stage_log(f"--- {count}x {cmd} ---")
+
+            for i in range(count):
+                if self._stage_abort_flag:
+                    scan_aborted = True
+                    break
+
+                # Move
+                self._stage_send(cmd)
+
+                # Acquire
+                point_num += 1
+                pos_name = f"pt_{point_num:04d}_{axis}{direction}_{i+1}"
+                self.stage_log(
+                    f"=== Point {point_num}/{total_points}: {pos_name} ==="
+                )
+                self.stage_scan_progress.setValue(point_num)
+                QtWidgets.QApplication.processEvents()
+
+                if not acquire_at_position(pos_name):
+                    scan_aborted = True
+                    break
+
+        # ---- Scan finished ----
+        if voltage is not None:
+            self.spin_laser_voltage.setValue(0)
+            self.set_laser_voltage()
+            self.stage_log("Laser OFF (scan finished)")
+
+        self.stage_scan_progress.setValue(total_points)
+
+        if scan_aborted:
+            self.stage_log(f"=== Scan ABORTED after {point_num} points ===")
+        else:
+            self.stage_log(
+                f"=== Scan COMPLETE: {point_num}/{total_points} points ==="
+            )
+
+        self.stage_log(f"Data saved in: {run_dir}")
+
+        # List saved files
+        try:
+            files = sorted(os.listdir(run_dir))
+            self.stage_log(f"Total files: {len(files)}")
+            for fn in files:
+                fpath = os.path.join(run_dir, fn)
+                fsize = os.path.getsize(fpath)
+                self.stage_log(f"  {fn} ({fsize} bytes)")
+        except Exception as e:
+            self.stage_log(f"Error listing files: {e}")
+
+        if params.get('home', False) and not scan_aborted:
+            self._stage_return_home_from_sequence(stroke_seq)
+
+        self.stage_log("=== DONE ===")
+
+
+
+    def _stage_return_home_from_sequence(self, stroke_sequence):
+        """Retrace the stroke sequence in reverse to return to start."""
+        self.stage_log("=== Returning home (retracing path) ===")
+
+        # Reverse the sequence and invert directions
+        opposite = {
+            'pos': 'neg',
+            'neg': 'pos',
+        }
+        cmd_map = {
+            ('x', 'pos'): "MOVE_X_POS",
+            ('x', 'neg'): "MOVE_X_NEG",
+            ('y', 'pos'): "MOVE_Y_POS",
+            ('y', 'neg'): "MOVE_Y_NEG",
+        }
+
+        reversed_seq = list(reversed(stroke_sequence))
+
+        for count, axis, direction in reversed_seq:
+            if self._stage_abort_flag:
+                self.stage_log("Home return ABORTED")
+                return
+
+            inv_dir = opposite[direction]
+            cmd = cmd_map.get((axis, inv_dir), "STOP")
+
+            self.stage_log(f"  Home: {count}x {cmd}")
+
+            for i in range(count):
+                if self._stage_abort_flag:
+                    self.stage_log("Home return ABORTED")
+                    return
+                self._stage_send(cmd)
+                QtWidgets.QApplication.processEvents()
+
+        self.stage_log("=== Returned home ===")
+
+
+
+
+
+
+
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     window = SpectrometerApp()

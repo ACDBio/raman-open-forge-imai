@@ -79,7 +79,7 @@ Pipeline based on ramanspy:
  - Reference plotting from search results or entire database.
 
 ### Motorized table control and automated scans
- - Includes code for interaction with motorized XY stage based on two stepper motors (e.g. https://aliexpress.ru/item/32790147861.html?spm=a2g2w.orderdetail.0.0.13d54aa6a1Z1IZ&sku_id=63501886881&_ga=2.106962242.135651944.1772988164-1631170546.1742897773).
+ - Includes interface for interaction with motorized XY stages based on two stepper motors (e.g. https://aliexpress.ru/item/32790147861.html?spm=a2g2w.orderdetail.0.0.13d54aa6a1Z1IZ&sku_id=63501886881&_ga=2.106962242.135651944.1772988164-1631170546.1742897773).
  - Manual navigation and automated Raman probe scans.
 ![Motorized table control](https://github.com/ACDBio/raman-open-forge-imai/blob/main/motorcontrol.png)
 

@@ -81,7 +81,7 @@ Pipeline based on ramanspy:
 ### Motorized table control and automated scans
  - Includes code for interaction with motorized XY stage based on two stepper motors.
  - Manual navigation and automated Raman probe scans.
-![Motorized table control]([https://github.com/ACDBio/raman-open-forge-imai/blob/main/calib_1_acetone.gif](https://github.com/ACDBio/raman-open-forge-imai/blob/main/motorcontrol.png))
+![Motorized table control]([https://github.com/ACDBio/raman-open-forge-imai/blob/main/calib_1_acetone.gif](https://github.com/ACDBio/raman-open-forge-imai/blob/main/motorcontrol.png)
 
 
 ### Plotting and Visualization

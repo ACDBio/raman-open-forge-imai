@@ -1580,7 +1580,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         settings_lay.addRow("Speed Y (rpm):", self.spin_stage_speed_y)
         self.spin_stage_step_size = QtWidgets.QSpinBox()
         self.spin_stage_step_size.setRange(1, 5000)
-        self.spin_stage_step_size.setValue(150)
+        self.spin_stage_step_size.setValue(30)
         settings_lay.addRow("Step size (steps):", self.spin_stage_step_size)
         btn_row = QtWidgets.QHBoxLayout()
         btn_apply_s = QtWidgets.QPushButton("Apply Settings")
@@ -1634,12 +1634,12 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         motion_lay = QtWidgets.QVBoxLayout()
         motion_lay.setSpacing(2)
         motion_lay.addWidget(QtWidgets.QLabel(
-            "Syntax: xspeed60yspeed70pause500_3strokesxneg2strokesypos_home"
+            "Syntax: xspeed60yspeed70step200pause500_3strokesxneg2strokesypos_home"
         ))
         self.stage_motion_edit = QtWidgets.QPlainTextEdit()
         self.stage_motion_edit.setMaximumHeight(45)
         self.stage_motion_edit.setPlaceholderText(
-            "xspeed60yspeed70pause500_3strokesxneg2strokesypos_home"
+            "xspeed60yspeed70step200pause500_3strokesxneg2strokesypos_home"
         )
         motion_lay.addWidget(self.stage_motion_edit)
         btn_run_m = QtWidgets.QPushButton("▶ Run Motion Program")
@@ -1653,14 +1653,15 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         scan_lay = QtWidgets.QVBoxLayout()
         scan_lay.setSpacing(2)
         scan_lay.addWidget(QtWidgets.QLabel(
-            "Syntax: xspeed60yspeed70pause500inttime100v3000\n"
-            "_3strokesxneg2strokesypos_runnametest_autodarktrue_home"
+            "Syntax: xspeed60yspeed70step200inttime200v500settle200\n"
+            "_3strokesxneg2strokesypos_runnametest\n"
+            "_autodarktrue_savezoomtrue_home"
         ))
         self.stage_scan_edit = QtWidgets.QPlainTextEdit()
         self.stage_scan_edit.setMaximumHeight(50)
         self.stage_scan_edit.setPlaceholderText(
-            "xspeed60yspeed70pause500inttime100v3000"
-            "_3strokesxneg2strokesypos_runnametest01_autodarktrue_home"
+            "xspeed60yspeed70step200inttime200v500settle200"
+            "_4strokesxneg_runnametest01_autodarktrue_savezoomtrue_home"
         )
         scan_lay.addWidget(self.stage_scan_edit)
         btn_run_s = QtWidgets.QPushButton("▶ Run Scan Program")
@@ -1719,14 +1720,26 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         if not port:
             QtWidgets.QMessageBox.warning(self, "Stage", "No port selected")
             return
+        # Check if same port as spectrometer
+        if self.serial_port.is_open and self.serial_port.port == port:
+            QtWidgets.QMessageBox.warning(
+                self, "Stage",
+                f"Port {port} is already used by spectrometer!\n"
+                "Select a different port for the stage."
+            )
+            return
         try:
             self.stage_serial = serial.Serial(port, baud, timeout=2)
             time.sleep(2)
-            if self.stage_serial.in_waiting:
-                startup = self.stage_serial.read(
-                    self.stage_serial.in_waiting
-                ).decode('ascii', errors='ignore')
-                self.stage_log(f"Startup: {startup.strip()}")
+            # Read any startup messages
+            try:
+                if self.stage_serial.in_waiting:
+                    startup = self.stage_serial.read(
+                        self.stage_serial.in_waiting
+                    ).decode('ascii', errors='ignore')
+                    self.stage_log(f"Startup: {startup.strip()}")
+            except Exception:
+                pass
             self.stage_serial.write(b"PING\n")
             time.sleep(0.3)
             resp = self._stage_read_line(timeout=2)
@@ -1745,6 +1758,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Stage Error", str(e))
             self.stage_log(f"Connection error: {e}")
+            self.stage_serial = None
 
     def stage_disconnect(self):
         if self.stage_serial is not None and self.stage_serial.is_open:
@@ -1762,9 +1776,17 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         if self.stage_serial is None or not self.stage_serial.is_open:
             self.stage_log("Stage not connected!")
             return None
-        self.stage_serial.reset_input_buffer()
-        self.stage_serial.write((cmd.strip() + "\n").encode('ascii'))
-        self.stage_log(f"TX: {cmd.strip()}")
+        try:
+            try:
+                self.stage_serial.reset_input_buffer()
+            except Exception:
+                pass  # ignore flush errors on Linux
+            self.stage_serial.write((cmd.strip() + "\n").encode('ascii'))
+            self.stage_log(f"TX: {cmd.strip()}")
+        except Exception as e:
+            self.stage_log(f"TX ERROR: {e}")
+            self._stage_reconnect_prompt()
+            return None
         resp = self._stage_read_line(timeout=15)
         if resp:
             self.stage_log(f"RX: {resp}")
@@ -1776,16 +1798,37 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         start = time.time()
         buf = ""
         while time.time() - start < timeout:
-            if self.stage_serial.in_waiting:
-                ch = self.stage_serial.read(1).decode('ascii', errors='ignore')
-                if ch == '\n':
-                    return buf.strip()
-                if ch != '\r':
-                    buf += ch
-            else:
-                time.sleep(0.005)
+            try:
+                if self.stage_serial.in_waiting:
+                    ch = self.stage_serial.read(1).decode('ascii', errors='ignore')
+                    if ch == '\n':
+                        return buf.strip()
+                    if ch != '\r':
+                        buf += ch
+                else:
+                    time.sleep(0.005)
+            except Exception as e:
+                self.stage_log(f"RX ERROR: {e}")
+                return None
             QtWidgets.QApplication.processEvents()
         return buf.strip() if buf.strip() else None
+
+
+    def _stage_reconnect_prompt(self):
+        """Handle lost stage connection."""
+        self.stage_log("Stage connection lost!")
+        self.stage_status_label.setText("● CONNECTION LOST")
+        self.stage_status_label.setStyleSheet(
+            "color: red; font-weight: bold;"
+        )
+        # Try to close cleanly
+        try:
+            if self.stage_serial is not None:
+                self.stage_serial.close()
+        except Exception:
+            pass
+        self.stage_serial = None
+        self._stage_abort_flag = True
 
     def _stage_wait_ok(self, timeout=15):
         """Read lines until we get one starting with OK, or timeout."""
@@ -1824,17 +1867,27 @@ class SpectrometerApp(QtWidgets.QMainWindow):
 
     def _parse_stage_program(self, text):
         """
-        Parse program string into list of stroke commands + settings.
+        Parse program string.
         
-        New syntax with direction:
-          xspeed60yspeed70pause500_3strokesxneg2strokesypos
-          xspeed60yspeed70pause500inttime100v3000_3strokesxneg2strokesypos_runnametest_autodarktrue
+        Syntax examples:
+          Motion: xspeed60yspeed70step200_3strokesxneg2strokesypos_home
+          Scan:   xspeed60yspeed70step200inttime200v500_4strokesxneg_runnametest_autodarktrue_savezoomtrue_home
         
-        Each stroke block: <count>strokes<axis><direction>
+        Parameters:
+          xspeed<N>     - X motor speed rpm (default 60)
+          yspeed<N>     - Y motor speed rpm (default 100)
+          step<N>       - step size in motor steps (default from UI)
+          pause<N>      - pause between steps ms (motion program only; scan auto-calculates)
+          inttime<N>    - integration time ms (scan only)
+          v<N>          - laser voltage mV (scan only)
+          runname<str>  - output folder name (scan only)
+          autodarktrue/false - acquire dark before scan
+          savezoomtrue/false - save zoomed plot screenshots
+          _home         - return to start after completion
+          
+        Strokes: <count>strokes<axis><direction>
           axis: x or y
           direction: pos or neg
-        
-        Strokes are executed in order as written.
         """
         import re
         text = text.strip()
@@ -1846,8 +1899,9 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         m = re.search(r'yspeed(\d+)', text)
         p['yspeed'] = int(m.group(1)) if m else 100
 
+        # pause - optional, used mainly for motion programs
         m = re.search(r'pause(\d+)', text)
-        p['pause'] = int(m.group(1)) if m else 500
+        p['pause'] = int(m.group(1)) if m else None
 
         m = re.search(r'inttime(\d+)', text)
         p['inttime'] = int(m.group(1)) if m else None
@@ -1861,24 +1915,31 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         m = re.search(r'autodark(true|false)', text, re.IGNORECASE)
         p['autodark'] = (m.group(1).lower() == 'true') if m else False
 
+        m = re.search(r'savezoom(true|false)', text, re.IGNORECASE)
+        p['savezoom'] = (m.group(1).lower() == 'true') if m else False
 
-        m = re.search(r'stepsize(\d+)', text)
+
+        m = re.search(r'settle(\d+)', text)
+        p['settle'] = int(m.group(1)) if m else 50
+
+
+        # step<N> - step size. Use 'step' prefix, avoid matching 'strokes'
+        m = re.search(r'(?<![a-zA-Z])step(\d+)(?!.*strokes)', text)
+        if not m:
+            # try alternate: step right before a non-digit or underscore
+            m = re.search(r'(?:^|_)step(\d+)', text)
         p['stepsize'] = int(m.group(1)) if m else self.spin_stage_step_size.value()
 
-        # Parse stroke sequence: list of (count, axis, direction)
-        # e.g. "3strokesxneg" -> (3, 'x', 'neg')
-        # e.g. "2strokesypos" -> (2, 'y', 'pos')
+        # Parse stroke sequence
         stroke_pattern = re.compile(r'(\d+)strokes(x|y)(pos|neg)')
         strokes = stroke_pattern.findall(text)
-        
+
         if strokes:
             p['stroke_sequence'] = [
                 (int(count), axis, direction)
                 for count, axis, direction in strokes
             ]
         else:
-            # Fallback: try old format without direction
-            # e.g. "3strokesx2strokesy" -> default pos
             old_pattern = re.compile(r'(\d+)strokes(x|y)')
             old_strokes = old_pattern.findall(text)
             if old_strokes:
@@ -1889,7 +1950,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
             else:
                 p['stroke_sequence'] = [(1, 'x', 'pos')]
 
-        # Check for _home flag
+        # Home flag
         p['home'] = bool(re.search(r'_home\b', text, re.IGNORECASE))
 
         return p
@@ -1924,27 +1985,27 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         self._stage_send(f"SET_STEP_SIZE {params['stepsize']}")
 
         stroke_seq = params['stroke_sequence']
-        pause_ms = params['pause']
+        # For motion program: use explicit pause or default 500ms
+        pause_ms = params['pause'] if params['pause'] is not None else 500
 
-        # Calculate total steps
         total = sum(count for count, axis, direction in stroke_seq)
         self.stage_scan_progress.setRange(0, total)
         self.stage_scan_progress.setValue(0)
         step_num = 0
+
+        cmd_map = {
+            ('x', 'pos'): "MOVE_X_POS",
+            ('x', 'neg'): "MOVE_X_NEG",
+            ('y', 'pos'): "MOVE_Y_POS",
+            ('y', 'neg'): "MOVE_Y_NEG",
+        }
 
         for count, axis, direction in stroke_seq:
             if self._stage_abort_flag:
                 self.stage_log("Motion ABORTED")
                 return
 
-            cmd_map = {
-                ('x', 'pos'): "MOVE_X_POS",
-                ('x', 'neg'): "MOVE_X_NEG",
-                ('y', 'pos'): "MOVE_Y_POS",
-                ('y', 'neg'): "MOVE_Y_NEG",
-            }
             cmd = cmd_map.get((axis, direction), "MOVE_X_POS")
-
             self.stage_log(f"--- {count} strokes: {cmd} ---")
 
             for i in range(count):
@@ -2033,6 +2094,24 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                 "Spectrometer not connected!\nOpen spectrometer port first."
             )
             return
+        # Verify stage is alive
+        try:
+            self.stage_serial.write(b"PING\n")
+            time.sleep(0.2)
+            resp = self._stage_read_line(timeout=2)
+            if not resp or "PONG" not in resp:
+                QtWidgets.QMessageBox.warning(
+                    self, "Stage",
+                    "Stage not responding to PING!\n"
+                    "Check connection and try again."
+                )
+                return
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "Stage", f"Stage communication error:\n{e}"
+            )
+            self._stage_reconnect_prompt()
+            return
 
         params = self._parse_stage_program(text)
         self.stage_log(f"Scan params: {params}")
@@ -2042,20 +2121,16 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         autodark = params['autodark']
         inttime = params['inttime']
         voltage = params['voltage']
-        pause_ms = params['pause']
+        savezoom = params['savezoom']
         stroke_seq = params['stroke_sequence']
 
-        # Total number of individual steps (= acquisition points)
-        total = sum(count for count, axis, direction in stroke_seq)
-        # Plus 1 for the starting position
-        total_points = total + 1
+        # Auto-calculate settle time from integration time
+        # Settle time: from syntax or default 50ms
+        settle_ms = params.get('settle', 50)
+        self.stage_log(f">> Settle time: {settle_ms} ms")
 
-        if inttime is not None and inttime >= pause_ms:
-            QtWidgets.QMessageBox.warning(
-                self, "Stage",
-                f"inttime ({inttime}ms) must be < pause ({pause_ms}ms)!"
-            )
-            return
+        total = sum(count for count, axis, direction in stroke_seq)
+        total_points = total + 1
 
         # Create output directory
         run_dir = os.path.join(os.getcwd(), runname)
@@ -2066,32 +2141,56 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         with open(os.path.join(run_dir, "scan_parameters.txt"), 'w') as f:
             for k, v in params.items():
                 f.write(f"{k}={v}\n")
+            f.write(f"settle_ms={settle_ms}\n")
             f.write(f"total_points={total_points}\n")
             f.write(f"timestamp={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
         # Apply stage settings
+        self.stage_log(">> Applying stage settings...")
         self._stage_send(f"SET_SPEED_X {params['xspeed']}")
         self._stage_send(f"SET_SPEED_Y {params['yspeed']}")
         self._stage_send(f"SET_STEP_SIZE {params['stepsize']}")
+        self.stage_log(">> Stage settings applied OK")
 
         # Set integration time
         if inttime is not None:
-            self.spin_integration_time.setValue(inttime)
-            self.set_integration_time()
-            self.stage_log(f"Integration time -> {inttime} ms")
+            self.stage_log(f">> Setting integration time to {inttime} ms...")
+            QtWidgets.QApplication.processEvents()
+            try:
+                self.spin_integration_time.setValue(inttime)
+                self.set_integration_time()
+                self.stage_log(f">> Integration time set OK -> {inttime} ms")
+            except Exception as e:
+                self.stage_log(f">> ERROR setting integration time: {e}")
+        else:
+            self.stage_log(">> No inttime specified, skipping")
 
-        # Laser OFF initially
+        # Set laser voltage (power level) but keep trigger out LOW
         if voltage is not None:
-            self.spin_laser_voltage.setValue(0)
-            self.set_laser_voltage()
-            self.stage_log("Laser OFF for setup")
+            self.stage_log(f">> Setting laser voltage to {voltage} mV (trigger stays OFF)...")
+            QtWidgets.QApplication.processEvents()
+            try:
+                self.spin_laser_voltage.setValue(voltage)
+                self.set_laser_voltage()
+                self.stage_log(f">> Laser voltage set to {voltage} mV OK")
+            except Exception as e:
+                self.stage_log(f">> ERROR setting voltage: {e}")
+            self._set_trigger_out_value(False)
             time.sleep(0.1)
+        else:
+            self.stage_log(">> No voltage specified, skipping laser control")
 
-        # ---- Dark spectrum ----
+        # ---- Dark spectrum (trigger OUT LOW = laser not firing) ----
         dark_spectrum = None
         if autodark:
-            self.stage_log("=== Auto-dark (laser OFF) ===")
-            dark_spectrum = self._acquire_valid_dark(max_attempts=5)
+            self.stage_log("=== Auto-dark (trigger OUT LOW = laser not firing) ===")
+            self._set_trigger_out_value(False)
+            QtWidgets.QApplication.processEvents()
+            try:
+                dark_spectrum = self._acquire_valid_dark(max_attempts=5)
+            except Exception as e:
+                self.stage_log(f">> ERROR during dark acquisition: {e}")
+                dark_spectrum = None
             if dark_spectrum is not None:
                 np.savetxt(
                     os.path.join(run_dir, "dark_spectrum.csv"),
@@ -2099,43 +2198,58 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                     delimiter=',', header='wavelength,intensity', comments=''
                 )
                 self.background_spectrum = dark_spectrum.copy()
-                self.stage_log("Dark spectrum saved and set as background")
+                self.stage_log(">> Dark spectrum saved and set as background")
             else:
-                self.stage_log("WARNING: Could not get valid dark!")
+                self.stage_log(">> WARNING: Could not get valid dark!")
         else:
             if self.background_spectrum is not None:
                 dark_spectrum = self.background_spectrum.copy()
-                self.stage_log("Using existing background")
+                self.stage_log(">> Using existing background")
             else:
-                self.stage_log("No background - raw data only")
+                self.stage_log(">> No background - raw data only")
 
-        # Laser ON
-        if voltage is not None:
-            self.spin_laser_voltage.setValue(voltage)
-            self.set_laser_voltage()
-            self.stage_log(f"Laser ON -> {voltage} mV")
-            time.sleep(0.3)
+        self.stage_log(">> Setup complete, starting scan loop...")
+        self.stage_log(">> Laser will fire (trigger HIGH) only during acquisition")
+        QtWidgets.QApplication.processEvents()
 
         # ---- Helper: acquire and save at current position ----
         def acquire_at_position(pos_name):
             self.stage_log(f"  Acquiring at {pos_name}...")
 
-            settle_time = max(50, pause_ms - (inttime if inttime else 0))
-            self._stage_pause(settle_time)
+            # Wait for stage to settle
+            self._stage_pause(settle_ms)
 
             if self._stage_abort_flag:
                 return False
 
+            # Laser ON: trigger out HIGH
+            self._set_trigger_out_value(True)
+            time.sleep(0.05)
+
             raw_data = self._scan_acquire_valid(max_attempts=3)
+
+            # Laser OFF: trigger out LOW
+            self._set_trigger_out_value(False)
+
             if raw_data is None:
                 self.stage_log(f"  FAILED to acquire at {pos_name}")
-                return True  # continue scanning
+                return True
 
             # Save raw
             np.savetxt(
                 os.path.join(run_dir, f"{pos_name}_raw.csv"),
                 np.column_stack((self.wavelengths, raw_data)),
                 delimiter=',', header='wavelength,raw_intensity', comments=''
+            )
+
+            # Save raw plot screenshot
+            self.current_spectrum_1 = raw_data.copy()
+            self.original_spectrum = raw_data.copy()
+            self.checkbox_zoom.setChecked(False)
+            self.update_plot(self.wavelengths, raw_data)
+            QtWidgets.QApplication.processEvents()
+            self._save_screenshot(
+                os.path.join(run_dir, f"{pos_name}_raw_plot.png")
             )
 
             # Save corrected
@@ -2150,15 +2264,32 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                 self.current_spectrum_1 = corrected.copy()
                 self.original_spectrum = corrected.copy()
                 self.update_plot(self.wavelengths, corrected)
+                QtWidgets.QApplication.processEvents()
+                self._save_screenshot(
+                    os.path.join(run_dir, f"{pos_name}_corrected_plot.png")
+                )
+
+                # Save zoomed plot if requested
+                if savezoom:
+                    self.checkbox_zoom.setChecked(True)
+                    self.update_plot(self.wavelengths, corrected)
+                    QtWidgets.QApplication.processEvents()
+                    self._save_screenshot(
+                        os.path.join(run_dir, f"{pos_name}_corrected_zoom.png")
+                    )
+                    self.checkbox_zoom.setChecked(False)
             else:
-                self.current_spectrum_1 = raw_data.copy()
-                self.original_spectrum = raw_data.copy()
-                self.update_plot(self.wavelengths, raw_data)
+                # No dark - save zoomed raw if requested
+                if savezoom:
+                    self.checkbox_zoom.setChecked(True)
+                    self.update_plot(self.wavelengths, raw_data)
+                    QtWidgets.QApplication.processEvents()
+                    self._save_screenshot(
+                        os.path.join(run_dir, f"{pos_name}_raw_zoom.png")
+                    )
+                    self.checkbox_zoom.setChecked(False)
 
             QtWidgets.QApplication.processEvents()
-            self._save_screenshot(
-                os.path.join(run_dir, f"{pos_name}_plot.png")
-            )
             return True
 
         # ---- Scan loop ----
@@ -2211,11 +2342,14 @@ class SpectrometerApp(QtWidgets.QMainWindow):
                     scan_aborted = True
                     break
 
-        # ---- Scan finished ----
+        # ---- Scan finished: ensure laser is completely off ----
+        self.stage_log(">> Ensuring laser is OFF...")
+        self._set_trigger_out_value(False)
         if voltage is not None:
             self.spin_laser_voltage.setValue(0)
             self.set_laser_voltage()
-            self.stage_log("Laser OFF (scan finished)")
+        self.cb_trigger_out.setChecked(False)
+        self.stage_log(">> Laser OFF confirmed (trigger LOW, voltage 0)")
 
         self.stage_scan_progress.setValue(total_points)
 
@@ -2285,7 +2419,13 @@ class SpectrometerApp(QtWidgets.QMainWindow):
 
 
 
-
+    def _set_trigger_out_value(self, on):
+        """Set trigger out HIGH (laser fires) or LOW (laser off)."""
+        value = 1 if on else 0
+        self.send_command_with_data(0x10, value, 0x00)
+        state_str = "HIGH (ON)" if on else "LOW (OFF)"
+        self.stage_log(f"  Trigger Out -> {state_str}")
+        time.sleep(0.05)
 
 
 

@@ -27,7 +27,7 @@ class SpectrometerApp(QtWidgets.QMainWindow):
         self.average_count = 1
 
         # Restored old defaults
-        self.wavelength_min = 796
+        self.wavelength_min = 796 #from spectrometer sheet
         self.wavelength_max = 1119
         self.wavelengths = np.linspace(self.wavelength_min, self.wavelength_max, 2048)
 
